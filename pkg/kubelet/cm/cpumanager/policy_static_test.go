@@ -667,6 +667,95 @@ func TestStaticPolicyReuseCPUs(t *testing.T) {
 	}
 }
 
+func TestStaticPolicyReuseCPUsOnAllocate(t *testing.T) {
+	testCases := []staticPolicyTest{
+		{
+			description: "MultiNUMAPerSocketHT, ReuseCPUsFromInit, InitCPUs==AppCPUs",
+			topo:        topoDualSocketMultiNumaPerSocketHT,
+			pod: makeMultiContainerPod(
+				[]struct{ request, limit string }{
+					{"11000m", "11000m"},
+					{"11000m", "11000m"},
+				},
+				[]struct{ request, limit string }{
+					{"11000m", "11000m"},
+				},
+			),
+			containerName:   "initContainer-0",
+			stAssignments:   state.ContainerCPUAssignments{},
+			stDefaultCPUSet: mustParseCPUSet(t, "0-79"),
+		},
+		{
+			description: "MultiNUMAPerSocketHT, ReuseCPUsFromInit, InitCPUs<AppCPUs",
+			topo:        topoDualSocketMultiNumaPerSocketHT,
+			pod: makeMultiContainerPod(
+				[]struct{ request, limit string }{
+					{"4000m", "4000m"},
+					{"5000m", "5000m"},
+				},
+				[]struct{ request, limit string }{
+					{"11000m", "11000m"},
+				},
+			),
+			containerName:   "initContainer-0",
+			stAssignments:   state.ContainerCPUAssignments{},
+			stDefaultCPUSet: mustParseCPUSet(t, "0-79"),
+		},
+		{
+			description: "MultiNUMAPerSocketHT, ReuseCPUsFromInit, InitCPUs>AppCPUs",
+			topo:        topoDualSocketMultiNumaPerSocketHT,
+			pod: makeMultiContainerPod(
+				[]struct{ request, limit string }{
+					{"4000m", "4000m"},
+					{"16000m", "16000m"},
+				},
+				[]struct{ request, limit string }{
+					{"11000m", "11000m"},
+				},
+			),
+			containerName:   "initContainer-0",
+			stAssignments:   state.ContainerCPUAssignments{},
+			stDefaultCPUSet: mustParseCPUSet(t, "0-79"),
+		},
+	}
+
+	for _, testCase := range testCases {
+		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), nil)
+
+		st := &mockState{
+			assignments:   testCase.stAssignments,
+			defaultCPUSet: testCase.stDefaultCPUSet,
+		}
+		pod := testCase.pod
+
+		// allocate
+		for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+			policy.Allocate(st, pod, &container)
+		}
+
+		podCpuAssign, found := st.assignments[string(pod.UID)]
+		if !found {
+			t.Fatalf("StaticPolicy ReuseCPUsOnAllocate: pod %v not in assigments", pod.UID)
+		}
+		refCpus, ok := podCpuAssign[testCase.containerName]
+		if !ok {
+			t.Fatalf("StaticPolicy ReuseCPUsOnAllocate: pod %v container %v not in assigments", pod.UID, testCase.containerName)
+		}
+		for cntName, cpus := range podCpuAssign {
+			if cntName == testCase.containerName {
+				continue
+			}
+			if cpus.IsSubsetOf(refCpus) {
+				continue
+			}
+			if refCpus.IsSubsetOf(cpus) {
+				continue
+			}
+			t.Fatalf("StaticPolicy ReuseCPUsOnAllocate: pod %v container %v not reusing cpus (container: %v reusable %v)", pod.UID, cntName, cpus.String(), refCpus.String())
+		}
+	}
+}
+
 func TestStaticPolicyRemove(t *testing.T) {
 	testCases := []staticPolicyTest{
 		{
