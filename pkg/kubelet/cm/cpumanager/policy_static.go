@@ -339,38 +339,61 @@ func (p *staticPolicy) RemoveContainer(s state.State, podUID string, containerNa
 }
 
 func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bitmask.BitMask, reusableCPUs cpuset.CPUSet) (cpuset.CPUSet, error) {
-	klog.InfoS("AllocateCPUs", "numCPUs", numCPUs, "socket", numaAffinity)
+	klog.InfoS("AllocateCPUs", "numCPUs", numCPUs, "NUMAAffinity", numaAffinity)
 
-	allocatableCPUs := p.GetAvailableCPUs(s).Union(reusableCPUs)
+	var err error
+	var result, cpus cpuset.CPUSet
 
-	// If there are aligned CPUs in numaAffinity, attempt to take those first.
-	result := cpuset.NewCPUSet()
+	availableCPUs := p.GetAvailableCPUs(s)
+	reusableCPUs = reusableCPUs.Clone() // fresh copy to be used freely inside this function
+
 	if numaAffinity != nil {
-		alignedCPUs := p.getAlignedCPUs(numaAffinity, allocatableCPUs)
+		var alignedCPUs cpuset.CPUSet
 
-		numAlignedToAlloc := alignedCPUs.Size()
-		if numCPUs < numAlignedToAlloc {
-			numAlignedToAlloc = numCPUs
-		}
-
-		alignedCPUs, err := p.takeByTopology(alignedCPUs, numAlignedToAlloc)
+		// 1. Pull as many aligned CPUs form the reusable set as possible
+		alignedCPUs = p.getAlignedCPUs(numaAffinity, reusableCPUs)
+		cpus, err = p.takeByTopology(alignedCPUs, minInt(numCPUs, alignedCPUs.Size()))
 		if err != nil {
-			return cpuset.NewCPUSet(), err
+			return result, err
 		}
+		reusableCPUs = reusableCPUs.Difference(cpus)
+		numCPUs -= cpus.Size()
+		result = result.Union(cpus)
+		klog.V(4).InfoS("AllocateCPUs", "allocated", cpus.Size(), "remaining", numCPUs, "pool", "reusable", "aligned", true, "result", result.String())
 
-		result = result.Union(alignedCPUs)
+		// 2. Pull as many CPUs from the remaining aligned CPU set as possible
+		alignedCPUs = p.getAlignedCPUs(numaAffinity, availableCPUs)
+		cpus, err = p.takeByTopology(alignedCPUs, minInt(numCPUs, alignedCPUs.Size()))
+		if err != nil {
+			return result, err
+		}
+		availableCPUs = availableCPUs.Difference(cpus)
+		numCPUs -= cpus.Size()
+		result = result.Union(cpus)
+		klog.V(4).InfoS("AllocateCPUs", "allocated", cpus.Size(), "remaining", numCPUs, "pool", "available", "aligned", true, "result", result.String())
 	}
 
-	// Get any remaining CPUs from what's leftover after attempting to grab aligned ones.
-	remainingCPUs, err := p.takeByTopology(allocatableCPUs.Difference(result), numCPUs-result.Size())
+	// 3. Pull as many non-aligned CPUs from the reusable set as required
+	cpus, err = p.takeByTopology(reusableCPUs, minInt(numCPUs, reusableCPUs.Size()))
 	if err != nil {
-		return cpuset.NewCPUSet(), err
+		return result, err
 	}
-	result = result.Union(remainingCPUs)
+	reusableCPUs = reusableCPUs.Difference(cpus)
+	numCPUs -= cpus.Size()
+	result = result.Union(cpus)
+	klog.V(4).InfoS("AllocateCPUs", "allocated", cpus.Size(), "remaining", numCPUs, "pool", "reusable", "aligned", false, "result", result.String())
+
+	// 4. Pull as many non-aligned CPUs from the remaining CPU set as required
+	cpus, err = p.takeByTopology(availableCPUs, numCPUs)
+	if err != nil {
+		return result, err
+	}
+	// last step, no need to do any more bookkeeping
+	result = result.Union(cpus)
+	klog.V(4).InfoS("AllocateCPUs", "allocated", cpus.Size(), "remaining", 0, "pool", "available", "aligned", false, "result", result.String())
 
 	// Remove allocated CPUs from the shared CPUSet.
 	s.SetDefaultCPUSet(s.GetDefaultCPUSet().Difference(result))
-
 	klog.InfoS("AllocateCPUs", "result", result)
 	return result, nil
 }
@@ -635,4 +658,11 @@ func (p *staticPolicy) getAlignedCPUs(numaAffinity bitmask.BitMask, allocatableC
 	}
 
 	return alignedCPUs
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
