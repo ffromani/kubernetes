@@ -37,8 +37,8 @@ spec:
         env:
         - name: PLUGIN_SOCK_DIR
           value: "/var/lib/kubelet/device-plugins"
-        - name: AUTO_REGISTER
-          value: "false"
+        - name: REGISTER_CONTROL_FILE
+          value: "/var/lib/kubelet/device-plugins/sample/registration"
         securityContext:
           privileged: true
         volumeMounts:

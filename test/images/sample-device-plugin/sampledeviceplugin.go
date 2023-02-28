@@ -17,11 +17,9 @@ limitations under the License.
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -76,9 +74,6 @@ func stubAllocFunc(r *pluginapi.AllocateRequest, devs map[string]pluginapi.Devic
 }
 
 func main() {
-	autoRegister := true
-	var err error
-
 	devs := []*pluginapi.Device{
 		{ID: "Dev-1", Health: pluginapi.Healthy},
 		{ID: "Dev-2", Health: pluginapi.Healthy},
@@ -91,15 +86,6 @@ func main() {
 		return
 	}
 
-	if autoRegisterString := os.Getenv("AUTO_REGISTER"); autoRegisterString != "" {
-		autoRegister, err = strconv.ParseBool(autoRegisterString)
-		if err != nil {
-			klog.Errorf("invalid boolean value specified")
-			panic(err)
-		}
-
-	}
-
 	socketPath := pluginSocksDir + "/dp." + fmt.Sprintf("%d", time.Now().Unix())
 
 	dp1 := plugin.NewDevicePluginStub(devs, socketPath, resourceName, false, false)
@@ -109,67 +95,69 @@ func main() {
 	}
 	dp1.SetAllocFunc(stubAllocFunc)
 
-	if !autoRegister {
-		triggerPath := pluginSocksDir + "/registered"
-
-		klog.Infof("triggerPath: %v", triggerPath)
-		if _, err := os.Stat(triggerPath); errors.Is(err, os.ErrNotExist) {
-			err := os.Mkdir(triggerPath, os.ModePerm)
-			if err != nil {
-				klog.Errorf("Directory creation %s failed: %v ", triggerPath, err)
-				panic(err)
-			}
-			klog.InfoS("Directory created successfully")
-		}
-
-		watcher, err := fsnotify.NewWatcher()
-		if err != nil {
-			klog.Errorf("Watcher creation failed: %v ", err)
+	if registerControlFile := os.Getenv("REGISTER_CONTROL_FILE"); registerControlFile != "" {
+		if err := handleRegistrationProcess(registerControlFile); err != nil {
 			panic(err)
 		}
-		defer watcher.Close()
-		updateCh := make(chan bool)
-		defer close(updateCh)
-		go func() {
-
-			klog.Infof("Starting go routine")
-			for {
-				klog.Infof("Waiting for a file event")
-
-				select {
-				case event, ok := <-watcher.Events:
-					if !ok {
-						return
-					}
-					klog.Infof("%s %s\n", event.Name, event.Op)
-					switch {
-					case event.Op&fsnotify.Remove == fsnotify.Remove:
-						klog.Infof("Delete:  %s: %s", event.Op, event.Name)
-						updateCh <- true
-					}
-				case err, ok := <-watcher.Errors:
-					if !ok {
-						return
-					}
-					klog.Errorf("error: %w", err)
-					panic(err)
-				}
-			}
-		}()
-
-		err = watcher.Add(triggerPath)
-		if err != nil {
-			klog.Errorf("Delete failed for %s: %w", triggerPath, err)
-			panic(err)
-		}
-
-		klog.InfoS("Waiting for directory to be deleted")
-		<-updateCh
-		klog.InfoS("Got event: directory was Deleted")
-		klog.InfoS("Client connected!")
 	}
+
 	if err := dp1.Register(pluginapi.KubeletSocket, resourceName, pluginapi.DevicePluginPath); err != nil {
 		panic(err)
 	}
 	select {}
+}
+
+func handleRegistrationProcess(registerControlFile string) error {
+	triggerPath := filepath.Dir(registerControlFile)
+
+	klog.InfoS("Registration process will be managed explicitly", "triggerPath", triggerPath, "triggerEntry", registerControlFile)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		klog.Errorf("Watcher creation failed: %v ", err)
+		return err
+	}
+
+	defer watcher.Close()
+	updateCh := make(chan bool)
+	defer close(updateCh)
+
+	go func() {
+		klog.Infof("Starting watching routine")
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				klog.InfoS("Received event", "name", event.Name, "operation", event.Op)
+				switch {
+				case event.Op&fsnotify.Remove == fsnotify.Remove:
+					if event.Name == registerControlFile {
+						klog.InfoS("Expected delete", "name", event.Name, "operation", event.Op)
+						updateCh <- true
+						return
+					}
+					klog.InfoS("Spurious delete", "name", event.Name, "operation", event.Op)
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				klog.Errorf("error: %w", err)
+				panic(err)
+			}
+		}
+	}()
+
+	err = watcher.Add(triggerPath)
+	if err != nil {
+		klog.Errorf("Failed to add watch to %q: %w", triggerPath, err)
+		return err
+	}
+
+	klog.InfoS("Waiting for control file to be deleted", "path", registerControlFile)
+	<-updateCh
+	klog.InfoS("Control file was deleted, connecting!")
+	return nil
 }
