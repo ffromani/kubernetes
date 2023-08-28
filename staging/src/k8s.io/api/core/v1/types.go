@@ -2415,6 +2415,35 @@ type ResourceRequirements struct {
 	// +featureGate=DynamicResourceAllocation
 	// +optional
 	Claims []ResourceClaim `json:"claims,omitempty" protobuf:"bytes,3,opt,name=claims"`
+	// Properties describes optional extra proprerties of the requested resources
+	// This field is immutable.
+	// More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+	// +featureGate=TopologyManagerLocalityToleration
+	// +optional
+	Properties []ResourceProperty `json:"properties,omitempty" "protobuf:"bytes,4,opt,name=properties"`
+}
+
+type ResourceLocalityToleration string
+
+// Resource locality toleration relaxes the resouce allocation constraint allowing
+// the system to place the resource not in the optimal zone (e.g. not in the same NUMA zone).
+const (
+	// The resource tolerates to be allocated closest to the optimum (e.g. in a neighbor NUMA zone,
+	// but not farther than that in the worker node.
+	ResourceLocalityNearby ResourceLocalityToleration = "Nearby"
+	// The resource has not alignment requirement, so it can be allocated anywhere in the the worker node.
+	ResourceLocalityAnywhere ResourceLocalityToleration = "Anywhere"
+)
+
+// ResourceProperty represent fine-grained properties of container resource request
+type ResourceProperty struct {
+	// Name is the name of the resource being described.
+	Name ResourceName `json:"name" protobuf:"bytes,1,name=name"`
+	// LocalityToleration describes the allocation locality toleration of this resource.
+	// If not specified, the default is that the resource cannot tolerate any allocation
+	// which is not the optimal one.
+	// +optional
+	LocalityToleration ResourceLocalityToleration `json:"localityToleration,omitempty" protobuf:"bytes,2,opt,name=localityToleration"`
 }
 
 // VolumeResourceRequirements describes the storage resource requirements for a volume.
