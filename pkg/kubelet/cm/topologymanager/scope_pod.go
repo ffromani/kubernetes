@@ -92,8 +92,8 @@ func (s *podScope) calculateAffinity(pod *v1.Pod) (map[string]TopologyHint, erro
 	return bestHints, nil
 }
 
-func computePodLocalityTolerations(pod *corev1.Pod) ([]corev1.ResourceProperty, error) {
-	props := make(map[corev1.ResourceName]corev1.ResourceLocalityToleration)
+func computePodLocalityTolerations(pod *v1.Pod) ([]v1.ResourceProperty, error) {
+	props := make(map[v1.ResourceName]v1.ResourceLocalityToleration)
 
 	for _, cnt := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		for _, cntProp := range cnt.Resources.Properties {
@@ -115,9 +115,9 @@ func computePodLocalityTolerations(pod *corev1.Pod) ([]corev1.ResourceProperty, 
 		}
 	}
 
-	retProps := make([]corev1.ResourceProperty, 0, len(props))
+	retProps := make([]v1.ResourceProperty, 0, len(props))
 	for name, tol := range props {
-		retProps = append(retProps, corev1.ResourceProperty{
+		retProps = append(retProps, v1.ResourceProperty{
 			Name:               name,
 			LocalityToleration: tol,
 		})

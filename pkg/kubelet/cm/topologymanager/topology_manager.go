@@ -41,6 +41,8 @@ const (
 	maxAllowableNUMANodes = 8
 	// ErrorTopologyAffinity represents the type for a TopologyAffinityError
 	ErrorTopologyAffinity = "TopologyAffinityError"
+	// ErrorLocalityToleration represents the type for a LocalityTolerationError
+	ErrorLocalityToleration = "LocalityTolerationError"
 )
 
 // TopologyAffinityError represents an resource alignment error
@@ -52,6 +54,21 @@ func (e TopologyAffinityError) Error() string {
 
 func (e TopologyAffinityError) Type() string {
 	return ErrorTopologyAffinity
+}
+
+// LocalityTolerationError represents inconsistent locality toleration across resource requests
+type LocalityTolerationError struct {
+	PodUID        string
+	ContainerName string
+	Resource      string
+}
+
+func (e LocalityTolerationError) Error() string {
+	return fmt.Sprintf("Inconsistent locality toleration for pod %q contaioner %q resource %q", e.PodUID, e.ContainerName, e.Resource)
+}
+
+func (e LocalityTolerationError) Type() string {
+	return ErrorLocalityToleration
 }
 
 // Manager interface provides methods for Kubelet to manage pod topology hints
@@ -170,6 +187,12 @@ func NewManager(topology []cadvisorapi.Node, topologyPolicyName string, topology
 
 	case PolicySingleNumaNode:
 		policy = NewSingleNumaNodePolicy(numaInfo, opts)
+
+	case PolicyPlugin:
+		policy, err = NewPluginPolicy(opts)
+		if err != nil {
+			return nil, err
+		}
 
 	default:
 		return nil, fmt.Errorf("unknown policy: \"%s\"", topologyPolicyName)
