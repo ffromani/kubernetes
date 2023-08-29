@@ -1524,7 +1524,9 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 		kl.pluginManager.AddHandler(pluginwatcherapi.DRAPlugin, plugincache.PluginHandler(draplugin.NewRegistrationHandler()))
 	}
 	// Adding Registration Callback function for Device Manager
-	kl.pluginManager.AddHandler(pluginwatcherapi.DevicePlugin, kl.containerManager.GetPluginRegistrationHandler())
+	kl.pluginManager.AddHandler(pluginwatcherapi.DevicePlugin, kl.containerManager.GetDevicePluginRegistrationHandler())
+	// TODO_fromani: feature gates
+	kl.pluginManager.AddHandler(pluginwatcherapi.DevicePlugin, kl.containerManager.GetPolicyPluginRegistrationHandler())
 
 	// Start the plugin manager
 	klog.V(4).InfoS("Starting plugin manager")

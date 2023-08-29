@@ -643,8 +643,12 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	return nil
 }
 
-func (cm *containerManagerImpl) GetPluginRegistrationHandler() cache.PluginHandler {
+func (cm *containerManagerImpl) GetDevicePluginRegistrationHandler() cache.PluginHandler {
 	return cm.deviceManager.GetWatcherHandler()
+}
+
+func (cm *containerManagerImpl) GetPolicyPluginRegistrationHandler() cache.PluginHandler {
+	return cm.topologyManager.GetWatcherHandler()
 }
 
 // TODO: move the GetResources logic to PodContainerManager.

@@ -16,6 +16,11 @@ limitations under the License.
 
 package topologymanager
 
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
+)
+
 type nonePolicy struct{}
 
 var _ Policy = &nonePolicy{}

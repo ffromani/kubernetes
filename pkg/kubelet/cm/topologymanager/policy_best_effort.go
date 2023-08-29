@@ -16,6 +16,11 @@ limitations under the License.
 
 package topologymanager
 
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
+)
+
 type bestEffortPolicy struct {
 	// numaInfo represents list of NUMA Nodes available on the underlying machine and distances between them
 	numaInfo *NUMAInfo
@@ -45,5 +50,9 @@ func (p *bestEffortPolicy) Merge(podUID, containerName string, resourcePropertie
 	merger := NewHintMerger(p.numaInfo, filteredHints, p.Name(), p.opts)
 	bestHint := merger.Merge()
 	admit := p.canAdmitPodResult(&bestHint)
-	return bestHint, admit
+	return map[string]TopologyHint{"": bestHint}, admit
+}
+
+func (p *bestEffortPolicy) GetWatcherHandler() cache.PluginHandler {
+	return nil
 }

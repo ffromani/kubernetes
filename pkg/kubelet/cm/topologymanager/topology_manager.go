@@ -65,6 +65,9 @@ type Manager interface {
 	AddContainer(pod *v1.Pod, container *v1.Container, containerID string)
 	// RemoveContainer removes pod from Manager tracking
 	RemoveContainer(containerID string) error
+
+	GetWatcherHandler() cache.PluginHandler
+
 	// Store is the interface for storing pod topology hints
 	Store
 }
@@ -221,4 +224,8 @@ func (m *manager) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitR
 	metrics.TopologyManagerAdmissionDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
 	return podAdmitResult
+}
+
+func (m *manager) GetWatcherHandler() cache.PluginHandler {
+	return m.scope.GetPolicy().GetWatcherHandler()
 }

@@ -102,10 +102,12 @@ type ContainerManager interface {
 	// GetPodCgroupRoot returns the cgroup which contains all pods.
 	GetPodCgroupRoot() string
 
-	// GetPluginRegistrationHandler returns a plugin registration handler
+	// GetDevicePluginRegistrationHandler returns a plugin registration handler
 	// The pluginwatcher's Handlers allow to have a single module for handling
 	// registration.
-	GetPluginRegistrationHandler() cache.PluginHandler
+	GetDevicePluginRegistrationHandler() cache.PluginHandler
+
+	GetPolicyPluginRegistrationHandler() cache.PluginHandler
 
 	// ShouldResetExtendedResourceCapacity returns whether or not the extended resources should be zeroed,
 	// due to node recreation.

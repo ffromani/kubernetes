@@ -176,8 +176,12 @@ func (cm *containerManagerImpl) GetCapacity(localStorageCapacityIsolation bool) 
 	return cm.capacity
 }
 
-func (cm *containerManagerImpl) GetPluginRegistrationHandler() cache.PluginHandler {
+func (cm *containerManagerImpl) GetDevicePluginRegistrationHandler() cache.PluginHandler {
 	return cm.deviceManager.GetWatcherHandler()
+}
+
+func (cm *containerManagerImpl) GetPolicyPluginRegistrationHandler() cache.PluginHandler {
+	return cm.topologyManager.GetWatcherHandler()
 }
 
 func (cm *containerManagerImpl) GetDevicePluginResourceCapacity() (v1.ResourceList, v1.ResourceList, []string) {

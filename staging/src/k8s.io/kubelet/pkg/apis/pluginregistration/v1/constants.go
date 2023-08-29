@@ -23,4 +23,6 @@ const (
 	DevicePlugin = "DevicePlugin"
 	// DRAPlugin identifier for registered Dynamic Resourc Allocation plugins
 	DRAPlugin = "DRAPlugin"
+	// PolicyPlugin identifier for registered Topology Manager policy plugins
+	PolicyPlugin = "PolicyPlugin"
 )

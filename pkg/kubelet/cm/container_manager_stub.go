@@ -89,7 +89,11 @@ func (cm *containerManagerStub) GetCapacity(localStorageCapacityIsolation bool) 
 	return c
 }
 
-func (cm *containerManagerStub) GetPluginRegistrationHandler() cache.PluginHandler {
+func (cm *containerManagerStub) GetDevicePluginRegistrationHandler() cache.PluginHandler {
+	return nil
+}
+
+func (cm *containerManagerStub) GetPolicyPluginRegistrationHandler() cache.PluginHandler {
 	return nil
 }
 
