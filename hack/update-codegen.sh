@@ -811,6 +811,8 @@ function codegen::protobindings() {
 
         "staging/src/k8s.io/kubelet/pkg/apis/deviceplugin"
 
+	"staging/src/k8s.io/kubelet/pkg/apis/topologymanager"
+
         "staging/src/k8s.io/kms/apis"
         "staging/src/k8s.io/apiserver/pkg/storage/value/encrypt/envelope/kmsv2"
 

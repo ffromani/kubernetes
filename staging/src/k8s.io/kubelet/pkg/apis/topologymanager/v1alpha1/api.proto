@@ -1,0 +1,73 @@
+// To regenerate api.pb.go run `hack/update-codegen.sh protobindings`
+syntax = "proto3";
+
+package v1alpha1;
+option go_package = "k8s.io/kubelet/pkg/apis/topologymanager/v1alpha1";
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+
+option (gogoproto.goproto_stringer_all) = false;
+option (gogoproto.stringer_all) =  true;
+option (gogoproto.goproto_getters_all) = true;
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.goproto_unrecognized_all) = false;
+
+
+// Registration is the service advertised by the Kubelet
+// Only when Kubelet answers with a success code to a Register Request
+// may Device Plugins start their service
+// Registration may fail when device plugin version is not supported by
+// Kubelet or the registered resourceName is already taken by another
+// active device plugin. Device plugin is expected to terminate upon registration failure
+service Registration {
+	rpc Register(RegisterRequest) returns (RegisterResponse) {}
+}
+
+message RegisterRequest {
+	// Version of the API the Device Plugin was built against
+	string version = 1;
+	// Name of the unix socket the device plugin is listening on
+	// PATH = path.Join(PolicyPluginPath, endpoint)
+	string endpoint = 2;
+	string name = 3;
+}
+
+message RegisterResponse {
+}
+
+// PolicyPlugin is the service advertised by Topology Manager Plugins
+service PolicyPlugin {
+	rpc MergeHints(MergeHintsRequest) returns (MergeHintsResponse) {}
+}
+
+message TopologyInfo {
+	repeated NUMANode nodes = 1;
+}
+
+message NUMANode {
+	int64 ID = 1;
+}
+
+message TopologyHint {
+	string resource	= 1;
+	TopologyInfo topology = 2;
+	bool preferred = 3;
+}
+
+message ResourceProperty {
+	string resource = 1;
+	string localityToleration = 2;
+}
+
+message MergeHintsRequest {
+	string podUID = 1;
+	string containerName = 2;
+	repeated TopologyHint hints = 3;
+	repeated ResourceProperty properties = 4;
+}
+
+message MergeHintsResponse {
+	repeated TopologyHint hints = 1;
+}
