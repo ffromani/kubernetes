@@ -226,9 +226,9 @@ type mockPolicy struct {
 	ph []map[string][]TopologyHint
 }
 
-func (p *mockPolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
+func (p *mockPolicy) Merge(podUID, containerName string, resouceProperties []corev1.ResourceProperty, providersHints []map[string][]TopologyHint) (map[string]TopologyHint, bool) {
 	p.ph = providersHints
-	return TopologyHint{}, true
+	return map[string]TopologyHint{"": TopologyHint{}}, true
 }
 
 func TestAddHintProvider(t *testing.T) {

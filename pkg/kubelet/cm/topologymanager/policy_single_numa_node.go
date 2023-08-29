@@ -16,6 +16,11 @@ limitations under the License.
 
 package topologymanager
 
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
+)
+
 type singleNumaNodePolicy struct {
 	// numaInfo represents list of NUMA Nodes available on the underlying machine and distances between them
 	numaInfo *NUMAInfo
@@ -58,7 +63,7 @@ func filterSingleNumaHints(allResourcesHints [][]TopologyHint) [][]TopologyHint 
 	return filteredResourcesHints
 }
 
-func (p *singleNumaNodePolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
+func (p *singleNumaNodePolicy) Merge(podUID, containerName string, resourceProperties []corev1.ResourceProperty, providersHints []map[string][]TopologyHint) (map[string]TopologyHint, bool) {
 	filteredHints := filterProvidersHints(providersHints)
 	// Filter to only include don't cares and hints with a single NUMA node.
 	singleNumaHints := filterSingleNumaHints(filteredHints)
@@ -71,5 +76,9 @@ func (p *singleNumaNodePolicy) Merge(providersHints []map[string][]TopologyHint)
 	}
 
 	admit := p.canAdmitPodResult(&bestHint)
-	return bestHint, admit
+	return map[string]TopologyHint{"": bestHint}, admit
+}
+
+func (p *singleNumaNodePolicy) GetWatcherHandler() cache.PluginHandler {
+	return nil
 }

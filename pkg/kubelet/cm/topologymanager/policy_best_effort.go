@@ -40,7 +40,7 @@ func (p *bestEffortPolicy) canAdmitPodResult(hint *TopologyHint) bool {
 	return true
 }
 
-func (p *bestEffortPolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
+func (p *bestEffortPolicy) Merge(podUID, containerName string, resourceProperties []corev1.ResourceProperty, providersHints []map[string][]TopologyHint) (map[string]TopologyHint, bool) {
 	filteredHints := filterProvidersHints(providersHints)
 	merger := NewHintMerger(p.numaInfo, filteredHints, p.Name(), p.opts)
 	bestHint := merger.Merge()

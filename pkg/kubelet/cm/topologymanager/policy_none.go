@@ -36,6 +36,10 @@ func (p *nonePolicy) canAdmitPodResult(hint *TopologyHint) bool {
 	return true
 }
 
-func (p *nonePolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
-	return TopologyHint{}, p.canAdmitPodResult(nil)
+func (p *nonePolicy) Merge(podUID, containerName string, resourceProperties []corev1.ResourceProperty, providersHints []map[string][]TopologyHint) (map[string]TopologyHint, bool) {
+	return map[string]TopologyHint{"": TopologyHint{}}, p.canAdmitPodResult(nil)
+}
+
+func (p *nonePolicy) GetWatcherHandler() cache.PluginHandler {
+	return nil
 }

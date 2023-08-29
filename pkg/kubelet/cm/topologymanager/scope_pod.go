@@ -45,16 +45,17 @@ func NewPodScope(policy Policy) Scope {
 }
 
 func (s *podScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
-	bestHint, admit := s.calculateAffinity(pod)
-	klog.InfoS("Best TopologyHint", "bestHint", bestHint, "pod", klog.KObj(pod))
-	if !admit {
+	bestHints, err := s.calculateAffinity(pod)
+	if err != nil {
 		metrics.TopologyManagerAdmissionErrorsTotal.Inc()
-		return admission.GetPodAdmitResult(&TopologyAffinityError{})
+		return admission.GetPodAdmitResult(err)
 	}
 
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
-		klog.InfoS("Topology Affinity", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name)
-		s.setTopologyHints(string(pod.UID), container.Name, bestHint)
+		for resourceName, bestHint := range bestHints {
+			klog.InfoS("Topology Affinity", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name, "resource", resourceName)
+			s.setTopologyHints(string(pod.UID), container.Name, resourceName, bestHint)
+		}
 
 		err := s.allocateAlignedResources(pod, &container)
 		if err != nil {
@@ -77,9 +78,49 @@ func (s *podScope) accumulateProvidersHints(pod *v1.Pod) []map[string][]Topology
 	return providersHints
 }
 
-func (s *podScope) calculateAffinity(pod *v1.Pod) (TopologyHint, bool) {
+func (s *podScope) calculateAffinity(pod *v1.Pod) (map[string]TopologyHint, error) {
+	podResProps, err := computePodLocalityTolerations(pod)
+	if err != nil {
+		return nil, err
+	}
 	providersHints := s.accumulateProvidersHints(pod)
-	bestHint, admit := s.policy.Merge(providersHints)
-	klog.InfoS("PodTopologyHint", "bestHint", bestHint)
-	return bestHint, admit
+	bestHints, admit := s.policy.Merge(string(pod.UID), "", podResProps, providersHints) // TODO
+	klog.InfoS("PodTopologyHint", "bestHints", bestHints)                                // TODO pretty print
+	if !admit {
+		return bestHints, &TopologyAffinityError{}
+	}
+	return bestHints, nil
+}
+
+func computePodLocalityTolerations(pod *corev1.Pod) ([]corev1.ResourceProperty, error) {
+	props := make(map[corev1.ResourceName]corev1.ResourceLocalityToleration)
+
+	for _, cnt := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		for _, cntProp := range cnt.Resources.Properties {
+			if cntProp.LocalityToleration == "" {
+				continue
+			}
+			tol, ok := props[cntProp.Name]
+			if !ok {
+				props[cntProp.Name] = tol
+				continue
+			}
+			if tol != cntProp.LocalityToleration {
+				return nil, &LocalityTolerationError{
+					PodUID:        string(pod.UID),
+					ContainerName: cnt.Name,
+					Resource:      string(cntProp.Name),
+				}
+			}
+		}
+	}
+
+	retProps := make([]corev1.ResourceProperty, 0, len(props))
+	for name, tol := range props {
+		retProps = append(retProps, corev1.ResourceProperty{
+			Name:               name,
+			LocalityToleration: tol,
+		})
+	}
+	return retProps, nil
 }

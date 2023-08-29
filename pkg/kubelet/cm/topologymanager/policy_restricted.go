@@ -16,6 +16,11 @@ limitations under the License.
 
 package topologymanager
 
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
+)
+
 type restrictedPolicy struct {
 	bestEffortPolicy
 }
@@ -38,10 +43,14 @@ func (p *restrictedPolicy) canAdmitPodResult(hint *TopologyHint) bool {
 	return hint.Preferred
 }
 
-func (p *restrictedPolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
+func (p *restrictedPolicy) Merge(podUID, containerName string, resourceProperties []corev1.ResourceProperty, providersHints []map[string][]TopologyHint) (map[string]TopologyHint, bool) {
 	filteredHints := filterProvidersHints(providersHints)
 	merger := NewHintMerger(p.numaInfo, filteredHints, p.Name(), p.opts)
 	bestHint := merger.Merge()
 	admit := p.canAdmitPodResult(&bestHint)
-	return bestHint, admit
+	return map[string]TopologyHint{"": bestHint}, admit
+}
+
+func (p *restrictedPolicy) GetWatcherHandler() cache.PluginHandler {
+	return nil
 }

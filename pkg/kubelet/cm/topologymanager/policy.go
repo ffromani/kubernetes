@@ -27,7 +27,9 @@ type Policy interface {
 	Name() string
 	// Returns a merged TopologyHint based on input from hint providers
 	// and a Pod Admit Handler Response based on hints and policy type
-	Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool)
+	Merge(podUID, containerName string, resourceProperties []corev1.ResourceProperty, providersHints []map[string][]TopologyHint) (map[string]TopologyHint, bool)
+
+	GetWatcherHandler() cache.PluginHandler
 }
 
 // Merge a TopologyHints permutation to a single hint by performing a bitwise-AND
