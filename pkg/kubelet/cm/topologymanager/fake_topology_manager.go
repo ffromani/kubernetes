@@ -51,8 +51,8 @@ func NewFakeManagerWithPolicy(policy Policy) Manager {
 	}
 }
 
-func (m *fakeManager) GetAffinity(podUID string, containerName string) TopologyHint {
-	klog.InfoS("GetAffinity", "podUID", podUID, "containerName", containerName)
+func (m *fakeManager) GetAffinity(podUID, containerName, resourceName string) TopologyHint {
+	klog.InfoS("GetAffinity", "podUID", podUID, "containerName", containerName, "resourceName", resourceName)
 	if m.hint == nil {
 		return TopologyHint{}
 	}

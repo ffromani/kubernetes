@@ -19,7 +19,7 @@ package topologymanager
 import (
 	"sync"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
@@ -35,7 +35,7 @@ const (
 	noneTopologyScope = "none"
 )
 
-type podTopologyHints map[string]map[string]TopologyHint
+type podTopologyHints map[string]map[string]map[string]TopologyHint
 
 // Scope interface for Topology Manager
 type Scope interface {
@@ -71,24 +71,32 @@ func (s *scope) Name() string {
 	return s.name
 }
 
-func (s *scope) getTopologyHints(podUID string, containerName string) TopologyHint {
+func (s *scope) getTopologyHints(podUID string, containerName string, resourceName string) TopologyHint {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	return s.podTopologyHints[podUID][containerName]
+	// TODO: handle universal
+	hint, ok := s.podTopologyHints[podUID][containerName][resourceName]
+	if !ok {
+		return s.podTopologyHints[podUID][containerName][""]
+	}
+	return hint
 }
 
-func (s *scope) setTopologyHints(podUID string, containerName string, th TopologyHint) {
+func (s *scope) setTopologyHints(podUID string, containerName string, resourceName string, th TopologyHint) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
 	if s.podTopologyHints[podUID] == nil {
-		s.podTopologyHints[podUID] = make(map[string]TopologyHint)
+		s.podTopologyHints[podUID] = make(map[string]map[string]TopologyHint)
 	}
-	s.podTopologyHints[podUID][containerName] = th
+	if s.podTopologyHints[podUID][containerName] == nil {
+		s.podTopologyHints[podUID][containerName] = make(map[string]TopologyHint)
+	}
+	s.podTopologyHints[podUID][containerName][resourceName] = th
 }
 
-func (s *scope) GetAffinity(podUID string, containerName string) TopologyHint {
-	return s.getTopologyHints(podUID, containerName)
+func (s *scope) GetAffinity(podUID, containerName, resourceName string) TopologyHint {
+	return s.getTopologyHints(podUID, containerName, resourceName)
 }
 
 func (s *scope) GetPolicy() Policy {

@@ -107,7 +107,7 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	}
 
 	// Call Topology Manager to get the aligned affinity across all hint providers.
-	hint := p.affinity.GetAffinity(podUID, container.Name)
+	hint := p.affinity.GetAffinity(podUID, container.Name, string(v1.ResourceMemory)) // TODO: correct?
 	klog.InfoS("Got topology affinity", "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "hint", hint)
 
 	requestedResources, err := getRequestedResources(pod, container)

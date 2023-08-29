@@ -97,7 +97,7 @@ type HintProvider interface {
 
 // Store interface is to allow Hint Providers to retrieve pod affinity
 type Store interface {
-	GetAffinity(podUID string, containerName string) TopologyHint
+	GetAffinity(podUID, containerName, resourceName string) TopologyHint
 	GetPolicy() Policy
 }
 
@@ -192,8 +192,8 @@ func NewManager(topology []cadvisorapi.Node, topologyPolicyName string, topology
 	return manager, nil
 }
 
-func (m *manager) GetAffinity(podUID string, containerName string) TopologyHint {
-	return m.scope.GetAffinity(podUID, containerName)
+func (m *manager) GetAffinity(podUID, containerName, resourceName string) TopologyHint {
+	return m.scope.GetAffinity(podUID, containerName, resourceName)
 }
 
 func (m *manager) GetPolicy() Policy {
