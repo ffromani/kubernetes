@@ -288,6 +288,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	cm.topologyManager, err = topologymanager.NewManager(
+		recorder,
 		machineInfo.Topology,
 		nodeConfig.TopologyManagerPolicy,
 		nodeConfig.TopologyManagerScope,
@@ -299,7 +300,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	klog.InfoS("Creating device plugin manager")
-	cm.deviceManager, err = devicemanager.NewManagerImpl(machineInfo.Topology, cm.topologyManager)
+	cm.deviceManager, err = devicemanager.NewManagerImpl(recorder, machineInfo.Topology, cm.topologyManager)
 	if err != nil {
 		return nil, err
 	}
@@ -316,6 +317,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 
 	// Initialize CPU manager
 	cm.cpuManager, err = cpumanager.NewManager(
+		recorder,
 		nodeConfig.CPUManagerPolicy,
 		nodeConfig.CPUManagerPolicyOptions,
 		nodeConfig.CPUManagerReconcilePeriod,
@@ -333,6 +335,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.MemoryManager) {
 		cm.memoryManager, err = memorymanager.NewManager(
+			recorder,
 			nodeConfig.ExperimentalMemoryManagerPolicy,
 			machineInfo,
 			cm.GetNodeAllocatableReservation(),

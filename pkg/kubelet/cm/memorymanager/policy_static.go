@@ -20,12 +20,14 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	corehelper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
@@ -34,6 +36,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/memorymanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/types"
 )
 
@@ -44,6 +47,7 @@ type reusableMemory map[string]map[string]map[v1.ResourceName]uint64
 
 // staticPolicy is implementation of the policy interface for the static policy
 type staticPolicy struct {
+	recorder record.EventRecorder
 	// machineInfo contains machine memory related information
 	machineInfo *cadvisorapi.MachineInfo
 	// reserved contains memory that reserved for kube
@@ -60,7 +64,7 @@ type staticPolicy struct {
 var _ Policy = &staticPolicy{}
 
 // NewPolicyStatic returns new static policy instance
-func NewPolicyStatic(machineInfo *cadvisorapi.MachineInfo, reserved systemReservedMemory, affinity topologymanager.Store) (Policy, error) {
+func NewPolicyStatic(recorder record.EventRecorder, machineInfo *cadvisorapi.MachineInfo, reserved systemReservedMemory, affinity topologymanager.Store) (Policy, error) {
 	var totalSystemReserved uint64
 	for _, node := range reserved {
 		if _, ok := node[v1.ResourceMemory]; !ok {
@@ -75,6 +79,7 @@ func NewPolicyStatic(machineInfo *cadvisorapi.MachineInfo, reserved systemReserv
 	}
 
 	return &staticPolicy{
+		recorder:                     recorder,
 		machineInfo:                  machineInfo,
 		systemReserved:               reserved,
 		affinity:                     affinity,
@@ -119,33 +124,49 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 		return err
 	}
 
+	reqResStr := formatRequestedResources(requestedResources)
+
 	machineState := s.GetMachineState()
 	bestHint := &hint
 	// topology manager returned the hint with NUMA affinity nil
 	// we should use the default NUMA affinity calculated the same way as for the topology manager
 	if hint.NUMANodeAffinity == nil {
+		klog.V(3).InfoS("Topology Hint has no NUMA Affinity, recomputing", "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "resources", reqResStr)
+
 		defaultHint, err := p.getDefaultHint(machineState, pod, requestedResources)
 		if err != nil {
+			p.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedAllocationMemory, "container %q: cannot recover default hint resources %s: %v", container.Name, reqResStr, err)
 			return err
 		}
 
 		if !defaultHint.Preferred && bestHint.Preferred {
+			p.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedAllocationMemory, "container %q: cannot find a preferred hint", container.Name)
 			return fmt.Errorf("[memorymanager] failed to find the default preferred hint")
 		}
+
+		klog.V(4).InfoS("Topology Hint recomputed", "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "previous", bestHint, "recomputed", defaultHint)
 		bestHint = defaultHint
 	}
 
 	// topology manager returns the hint that does not satisfy completely the container request
 	// we should extend this hint to the one who will satisfy the request and include the current hint
 	if !isAffinitySatisfyRequest(machineState, bestHint.NUMANodeAffinity, requestedResources) {
+		bestHintAff := bestHint.NUMANodeAffinity.String()
+
+		klog.V(3).InfoS("Cannot allocate with best hint affinity, extending", "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "affinity", bestHintAff, "resources", reqResStr)
+
 		extendedHint, err := p.extendTopologyManagerHint(machineState, pod, requestedResources, bestHint.NUMANodeAffinity)
 		if err != nil {
+			p.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedAllocationMemory, "container %q: cannot extend the default affinity %s resources %s: %v", container.Name, bestHintAff, reqResStr, err)
 			return err
 		}
 
 		if !extendedHint.Preferred && bestHint.Preferred {
+			p.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedAllocationMemory, "container %q: cannot extend the preferred hint from %s to %s resources %s", container.Name, bestHintAff, extendedHint.NUMANodeAffinity.String(), reqResStr)
 			return fmt.Errorf("[memorymanager] failed to find the extended preferred hint")
 		}
+
+		klog.V(4).InfoS("Topology Hint extended", "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "previous", bestHint, "extended", extendedHint)
 		bestHint = extendedHint
 	}
 
@@ -449,6 +470,14 @@ func getRequestedResources(pod *v1.Pod, container *v1.Container) (map[v1.Resourc
 		requestedResources[resourceName] = uint64(requestedSize)
 	}
 	return requestedResources, nil
+}
+
+func formatRequestedResources(reqRes map[v1.ResourceName]uint64) string {
+	items := make([]string, 0, len(reqRes))
+	for resName, resQty := range reqRes {
+		items = append(items, fmt.Sprintf("%s=%d", string(resName), resQty))
+	}
+	return strings.Join(items, ", ")
 }
 
 func (p *staticPolicy) calculateHints(machineState state.NUMANodeMap, pod *v1.Pod, requestedResources map[v1.ResourceName]uint64) map[string][]topologymanager.TopologyHint {

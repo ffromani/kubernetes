@@ -27,6 +27,7 @@ import (
 	"time"
 
 	cadvisorapi "github.com/google/cadvisor/info/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
@@ -36,11 +37,13 @@ import (
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager/errors"
+	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
 	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager/checkpoint"
 	plugin "k8s.io/kubernetes/pkg/kubelet/cm/devicemanager/plugin/v1beta1"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/config"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
@@ -55,6 +58,8 @@ type ActivePodsFunc func() []*v1.Pod
 
 // ManagerImpl is the structure in charge of managing Device Plugins.
 type ManagerImpl struct {
+	recorder record.EventRecorder
+
 	checkpointdir string
 
 	endpoints map[string]endpointInfo // Key is ResourceName
@@ -124,15 +129,15 @@ func (s *sourcesReadyStub) AddSource(source string) {}
 func (s *sourcesReadyStub) AllReady() bool          { return true }
 
 // NewManagerImpl creates a new manager.
-func NewManagerImpl(topology []cadvisorapi.Node, topologyAffinityStore topologymanager.Store) (*ManagerImpl, error) {
+func NewManagerImpl(recorder record.EventRecorder, topology []cadvisorapi.Node, topologyAffinityStore topologymanager.Store) (*ManagerImpl, error) {
 	socketPath := pluginapi.KubeletSocket
 	if runtime.GOOS == "windows" {
 		socketPath = os.Getenv("SYSTEMDRIVE") + pluginapi.KubeletSocketWindows
 	}
-	return newManagerImpl(socketPath, topology, topologyAffinityStore)
+	return newManagerImpl(recorder, socketPath, topology, topologyAffinityStore)
 }
 
-func newManagerImpl(socketPath string, topology []cadvisorapi.Node, topologyAffinityStore topologymanager.Store) (*ManagerImpl, error) {
+func newManagerImpl(recorder record.EventRecorder, socketPath string, topology []cadvisorapi.Node, topologyAffinityStore topologymanager.Store) (*ManagerImpl, error) {
 	klog.V(2).InfoS("Creating Device Plugin manager", "path", socketPath)
 
 	var numaNodes []int
@@ -141,6 +146,8 @@ func newManagerImpl(socketPath string, topology []cadvisorapi.Node, topologyAffi
 	}
 
 	manager := &ManagerImpl{
+		recorder: recorder,
+
 		endpoints: make(map[string]endpointInfo),
 
 		allDevices:            NewResourceDeviceInstances(),
@@ -338,6 +345,7 @@ func (m *ManagerImpl) Allocate(pod *v1.Pod, container *v1.Container) error {
 	for _, initContainer := range pod.Spec.InitContainers {
 		if container.Name == initContainer.Name {
 			if err := m.allocateContainerResources(pod, container, m.devicesToReuse[string(pod.UID)]); err != nil {
+				admission.HandleResourceAllocationEvent(m.recorder, pod, container.Name, events.FailedAllocationDevice, err)
 				return err
 			}
 			if !types.IsRestartableInitContainer(&initContainer) {
@@ -705,6 +713,14 @@ func (m *ManagerImpl) devicesToAllocate(podUID, contName, resource string, requi
 	return nil, fmt.Errorf("unexpectedly allocated less resources than required. Requested: %d, Got: %d", required, required-needed)
 }
 
+func (m *ManagerImpl) getNUMAAffinityString(podUID, contName string) string {
+	hint := m.topologyAffinityStore.GetAffinity(podUID, contName)
+	if hint.NUMANodeAffinity == nil {
+		return "N/A"
+	}
+	return hint.NUMANodeAffinity.String()
+}
+
 func (m *ManagerImpl) filterByAffinity(podUID, contName, resource string, available sets.Set[string]) (sets.Set[string], sets.Set[string], sets.Set[string]) {
 	// If alignment information is not available, just pass the available list back.
 	hint := m.topologyAffinityStore.GetAffinity(podUID, contName)
@@ -811,6 +827,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 	contName := container.Name
 	allocatedDevicesUpdated := false
 	needsUpdateCheckpoint := false
+	affinityString := m.getNUMAAffinityString(podUID, contName)
 	// Extended resources are not allowed to be overcommitted.
 	// Since device plugin advertises extended resources,
 	// therefore Requests must be equal to Limits and iterating
@@ -830,7 +847,12 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 		}
 		allocDevices, err := m.devicesToAllocate(podUID, contName, resource, needed, devicesToReuse[resource])
 		if err != nil {
-			return err
+			return admission.ResourceAllocationError{
+				Resource:     resource,
+				Needed:       needed,
+				NUMAAffinity: affinityString,
+				Err:          err,
+			}
 		}
 		if allocDevices == nil || len(allocDevices) <= 0 {
 			continue
@@ -858,7 +880,12 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 			m.mutex.Lock()
 			m.allocatedDevices = m.podDevices.devices()
 			m.mutex.Unlock()
-			return fmt.Errorf("unknown Device Plugin %s", resource)
+			return admission.ResourceAllocationError{
+				Resource:     resource,
+				Needed:       needed,
+				NUMAAffinity: affinityString,
+				Err:          fmt.Errorf("unknown Device Plugin %s", resource),
+			}
 		}
 
 		devs := allocDevices.UnsortedList()
@@ -873,11 +900,21 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 			m.mutex.Lock()
 			m.allocatedDevices = m.podDevices.devices()
 			m.mutex.Unlock()
-			return err
+			return admission.ResourceAllocationError{
+				Resource:     resource,
+				Needed:       needed,
+				NUMAAffinity: affinityString,
+				Err:          err,
+			}
 		}
 
 		if len(resp.ContainerResponses) == 0 {
-			return fmt.Errorf("no containers return in allocation response %v", resp)
+			return admission.ResourceAllocationError{
+				Resource:     resource,
+				Needed:       needed,
+				NUMAAffinity: affinityString,
+				Err:          fmt.Errorf("no containers return in allocation response %v", resp),
+			}
 		}
 
 		allocDevicesWithNUMA := checkpoint.NewDevicesPerNUMA()

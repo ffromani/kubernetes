@@ -22,6 +22,7 @@ import (
 
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
@@ -70,7 +71,8 @@ type Manager interface {
 
 type manager struct {
 	//Topology Manager Scope
-	scope Scope
+	scope    Scope
+	recorder record.EventRecorder
 }
 
 // HintProvider is an interface for components that want to collaborate to
@@ -119,6 +121,14 @@ func (th *TopologyHint) IsEqual(topologyHint TopologyHint) bool {
 	return false
 }
 
+func (th TopologyHint) String() string {
+	aff := "N/A"
+	if th.NUMANodeAffinity != nil {
+		aff = th.NUMANodeAffinity.String()
+	}
+	return fmt.Sprintf("[affinity=%s preferred=%v]", aff, th.Preferred)
+}
+
 // LessThan checks if TopologyHint `a` is less than TopologyHint `b`
 // this means that either `a` is a preferred hint and `b` is not
 // or `a` NUMANodeAffinity attribute is narrower than `b` NUMANodeAffinity attribute.
@@ -132,7 +142,7 @@ func (th *TopologyHint) LessThan(other TopologyHint) bool {
 var _ Manager = &manager{}
 
 // NewManager creates a new TopologyManager based on provided policy and scope
-func NewManager(topology []cadvisorapi.Node, topologyPolicyName string, topologyScopeName string, topologyPolicyOptions map[string]string) (Manager, error) {
+func NewManager(recorder record.EventRecorder, topology []cadvisorapi.Node, topologyPolicyName string, topologyScopeName string, topologyPolicyOptions map[string]string) (Manager, error) {
 	// When policy is none, the scope is not relevant, so we can short circuit here.
 	if topologyPolicyName == PolicyNone {
 		klog.InfoS("Creating topology manager with none policy")
@@ -175,10 +185,10 @@ func NewManager(topology []cadvisorapi.Node, topologyPolicyName string, topology
 	switch topologyScopeName {
 
 	case containerTopologyScope:
-		scope = NewContainerScope(policy)
+		scope = NewContainerScope(policy, recorder)
 
 	case podTopologyScope:
-		scope = NewPodScope(policy)
+		scope = NewPodScope(policy, recorder)
 
 	default:
 		return nil, fmt.Errorf("unknown scope: \"%s\"", topologyScopeName)
