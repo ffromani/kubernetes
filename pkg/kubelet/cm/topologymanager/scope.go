@@ -19,7 +19,8 @@ package topologymanager
 import (
 	"sync"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
@@ -54,8 +55,9 @@ type Scope interface {
 }
 
 type scope struct {
-	mutex sync.Mutex
-	name  string
+	recorder record.EventRecorder
+	mutex    sync.Mutex
+	name     string
 	// Mapping of a Pods mapping of Containers and their TopologyHints
 	// Indexed by PodUID to ContainerName
 	podTopologyHints podTopologyHints

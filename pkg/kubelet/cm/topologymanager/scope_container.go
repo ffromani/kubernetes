@@ -17,10 +17,12 @@ limitations under the License.
 package topologymanager
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 )
@@ -33,10 +35,11 @@ type containerScope struct {
 var _ Scope = &containerScope{}
 
 // NewContainerScope returns a container scope.
-func NewContainerScope(policy Policy) Scope {
+func NewContainerScope(policy Policy, recorder record.EventRecorder) Scope {
 	return &containerScope{
 		scope{
 			name:             containerTopologyScope,
+			recorder:         recorder,
 			podTopologyHints: podTopologyHints{},
 			policy:           policy,
 			podMap:           containermap.NewContainerMap(),
@@ -81,5 +84,8 @@ func (s *containerScope) calculateAffinity(pod *v1.Pod, container *v1.Container)
 	providersHints := s.accumulateProvidersHints(pod, container)
 	bestHint, admit := s.policy.Merge(providersHints)
 	klog.InfoS("ContainerTopologyHint", "bestHint", bestHint)
+	if !admit {
+		s.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedResourceAlignment, "scope container %s best hint %v", container.Name, bestHint.String())
+	}
 	return bestHint, admit
 }

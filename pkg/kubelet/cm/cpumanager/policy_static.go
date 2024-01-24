@@ -21,14 +21,17 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/utils/cpuset"
@@ -102,6 +105,7 @@ func (e SMTAlignmentError) Type() string {
 // potentially sharing their allocated CPUs for up to the CPU manager
 // reconcile period.
 type staticPolicy struct {
+	recorder record.EventRecorder
 	// cpu socket topology
 	topology *topology.CPUTopology
 	// set of CPUs that is not available for exclusive assignment
@@ -126,7 +130,7 @@ var _ Policy = &staticPolicy{}
 // NewStaticPolicy returns a CPU manager policy that does not change CPU
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
-func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, affinity topologymanager.Store, cpuPolicyOptions map[string]string) (Policy, error) {
+func NewStaticPolicy(recorder record.EventRecorder, topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, affinity topologymanager.Store, cpuPolicyOptions map[string]string) (Policy, error) {
 	opts, err := NewStaticPolicyOptions(cpuPolicyOptions)
 	if err != nil {
 		return nil, err
@@ -139,6 +143,7 @@ func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reserv
 	klog.InfoS("Static policy created with configuration", "options", opts)
 
 	policy := &staticPolicy{
+		recorder:    recorder,
 		topology:    topology,
 		affinity:    affinity,
 		cpusToReuse: make(map[string]cpuset.CPUSet),
@@ -355,7 +360,7 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	cpuset, err := p.allocateCPUs(s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)])
 	if err != nil {
 		klog.ErrorS(err, "Unable to allocate CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "numCPUs", numCPUs)
-		return err
+		return admission.MakeEventResourceAllocationError(p.recorder, pod, container.Name, events.FailedAllocationCPU, err)
 	}
 	s.SetCPUSet(string(pod.UID), container.Name, cpuset)
 	p.updateCPUsToReuse(pod, container, cpuset)
@@ -405,7 +410,7 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 
 		alignedCPUs, err := p.takeByTopology(alignedCPUs, numAlignedToAlloc)
 		if err != nil {
-			return cpuset.New(), err
+			return cpuset.New(), admission.MakeResourceAllocationError("CPU", numCPUs, numaAffinity, err)
 		}
 
 		result = result.Union(alignedCPUs)
@@ -414,7 +419,7 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 	// Get any remaining CPUs from what's leftover after attempting to grab aligned ones.
 	remainingCPUs, err := p.takeByTopology(allocatableCPUs.Difference(result), numCPUs-result.Size())
 	if err != nil {
-		return cpuset.New(), err
+		return cpuset.New(), admission.MakeResourceAllocationError("CPU", numCPUs, numaAffinity, err)
 	}
 	result = result.Union(remainingCPUs)
 
