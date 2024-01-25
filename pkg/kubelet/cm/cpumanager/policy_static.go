@@ -411,12 +411,7 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 
 		alignedCPUs, err := p.takeByTopology(alignedCPUs, numAlignedToAlloc)
 		if err != nil {
-			return cpuset.New(), admission.ResourceAllocationError{
-				Resource:     "CPU",
-				Needed:       numCPUs,
-				NUMAAffinity: numaAffinity.String(),
-				Err:          err,
-			}
+			return cpuset.New(), admission.MakeResourceAllocationError("CPU", numCPUs, numaAffinity, err)
 		}
 
 		result = result.Union(alignedCPUs)
@@ -425,12 +420,7 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 	// Get any remaining CPUs from what's leftover after attempting to grab aligned ones.
 	remainingCPUs, err := p.takeByTopology(allocatableCPUs.Difference(result), numCPUs-result.Size())
 	if err != nil {
-		return cpuset.New(), admission.ResourceAllocationError{
-			Resource:     "CPU",
-			Needed:       numCPUs,
-			NUMAAffinity: numaAffinity.String(),
-			Err:          err,
-		}
+		return cpuset.New(), admission.MakeResourceAllocationError("CPU", numCPUs, numaAffinity, err)
 	}
 	result = result.Union(remainingCPUs)
 

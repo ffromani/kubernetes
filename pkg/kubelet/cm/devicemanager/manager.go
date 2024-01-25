@@ -713,14 +713,6 @@ func (m *ManagerImpl) devicesToAllocate(podUID, contName, resource string, requi
 	return nil, fmt.Errorf("unexpectedly allocated less resources than required. Requested: %d, Got: %d", required, required-needed)
 }
 
-func (m *ManagerImpl) getNUMAAffinityString(podUID, contName string) string {
-	hint := m.topologyAffinityStore.GetAffinity(podUID, contName)
-	if hint.NUMANodeAffinity == nil {
-		return "N/A"
-	}
-	return hint.NUMANodeAffinity.String()
-}
-
 func (m *ManagerImpl) filterByAffinity(podUID, contName, resource string, available sets.Set[string]) (sets.Set[string], sets.Set[string], sets.Set[string]) {
 	// If alignment information is not available, just pass the available list back.
 	hint := m.topologyAffinityStore.GetAffinity(podUID, contName)
@@ -827,7 +819,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 	contName := container.Name
 	allocatedDevicesUpdated := false
 	needsUpdateCheckpoint := false
-	affinityString := m.getNUMAAffinityString(podUID, contName)
+	hint := m.topologyAffinityStore.GetAffinity(podUID, contName)
 	// Extended resources are not allowed to be overcommitted.
 	// Since device plugin advertises extended resources,
 	// therefore Requests must be equal to Limits and iterating
@@ -847,12 +839,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 		}
 		allocDevices, err := m.devicesToAllocate(podUID, contName, resource, needed, devicesToReuse[resource])
 		if err != nil {
-			return admission.ResourceAllocationError{
-				Resource:     resource,
-				Needed:       needed,
-				NUMAAffinity: affinityString,
-				Err:          err,
-			}
+			return admission.MakeResourceAllocationError(resource, needed, hint.NUMANodeAffinity, err)
 		}
 		if allocDevices == nil || len(allocDevices) <= 0 {
 			continue
@@ -880,12 +867,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 			m.mutex.Lock()
 			m.allocatedDevices = m.podDevices.devices()
 			m.mutex.Unlock()
-			return admission.ResourceAllocationError{
-				Resource:     resource,
-				Needed:       needed,
-				NUMAAffinity: affinityString,
-				Err:          fmt.Errorf("unknown Device Plugin %s", resource),
-			}
+			return admission.MakeResourceAllocationError(resource, needed, hint.NUMANodeAffinity, fmt.Errorf("unknown Device Plugin %s", resource))
 		}
 
 		devs := allocDevices.UnsortedList()
@@ -900,21 +882,11 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 			m.mutex.Lock()
 			m.allocatedDevices = m.podDevices.devices()
 			m.mutex.Unlock()
-			return admission.ResourceAllocationError{
-				Resource:     resource,
-				Needed:       needed,
-				NUMAAffinity: affinityString,
-				Err:          err,
-			}
+			return admission.MakeResourceAllocationError(resource, needed, hint.NUMANodeAffinity, err)
 		}
 
 		if len(resp.ContainerResponses) == 0 {
-			return admission.ResourceAllocationError{
-				Resource:     resource,
-				Needed:       needed,
-				NUMAAffinity: affinityString,
-				Err:          fmt.Errorf("no containers return in allocation response %v", resp),
-			}
+			return admission.MakeResourceAllocationError(resource, needed, hint.NUMANodeAffinity, fmt.Errorf("no containers return in allocation response %v", resp))
 		}
 
 		allocDevicesWithNUMA := checkpoint.NewDevicesPerNUMA()

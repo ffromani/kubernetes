@@ -18,6 +18,8 @@ package admission
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
@@ -29,17 +31,32 @@ const (
 
 type ResourceAllocationError struct {
 	Resource     string
-	Needed       int
 	NUMAAffinity string
 	Err          error
 }
 
 func (e ResourceAllocationError) Error() string {
-	return e.Err.Error()
+	return fmt.Sprintf("cannot allocate resource %s NUMA affinity %v: %v", e.Resource, e.NUMAAffinity, e.Err)
 }
 
 func (e ResourceAllocationError) Type() string {
 	return ErrorReasonAllocation
+}
+
+func MakeResourceAllocationError(resource string, needed int, affinity fmt.Stringer, err error) ResourceAllocationError {
+	return ResourceAllocationError{
+		Resource:     fmt.Sprintf("%s=%d", resource, needed),
+		NUMAAffinity: affinityToString(affinity),
+		Err:          err,
+	}
+}
+
+func MakeMultiResourceAllocationError(resources map[v1.ResourceName]uint64, affinity fmt.Stringer, err error) ResourceAllocationError {
+	return ResourceAllocationError{
+		Resource:     formatRequestedResources(resources),
+		NUMAAffinity: affinityToString(affinity),
+		Err:          err,
+	}
 }
 
 func HandleResourceAllocationEvent(recorder record.EventRecorder, pod *v1.Pod, cntName, reason string, err error) {
@@ -47,5 +64,20 @@ func HandleResourceAllocationEvent(recorder record.EventRecorder, pod *v1.Pod, c
 	if !errors.As(err, &ra) {
 		return
 	}
-	recorder.Eventf(pod, v1.EventTypeWarning, reason, "container %q: cannot allocate resource %s=%d NUMA affinity %v: %v", cntName, ra.Resource, ra.Needed, ra.NUMAAffinity, ra.Err)
+	recorder.Eventf(pod, v1.EventTypeWarning, reason, "container %q: %v", ra)
+}
+
+func affinityToString(affinity fmt.Stringer) string {
+	if affinity == nil {
+		return "N/A"
+	}
+	return affinity.String()
+}
+
+func formatRequestedResources(res map[v1.ResourceName]uint64) string {
+	items := make([]string, 0, len(res))
+	for resName, resQty := range res {
+		items = append(items, fmt.Sprintf("%s=%d", string(resName), resQty))
+	}
+	return strings.Join(items, ", ")
 }
