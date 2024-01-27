@@ -94,6 +94,10 @@ type HintProvider interface {
 	// all hints have been gathered and the aggregated Hint is available via a
 	// call to Store.GetAffinity().
 	Allocate(pod *v1.Pod, container *v1.Container) error
+	// GetExclusiveResources returns a list of resource names whose instances were
+	// esclusively allocated to this container. This is used by the orchestrator to
+	// check if a container got exclusive (vs shared) resources or not.
+	GetExclusiveResources(pod *v1.Pod, container *v1.Container) []string
 }
 
 // Store interface is to allow Hint Providers to retrieve pod affinity
@@ -146,7 +150,7 @@ func NewManager(recorder record.EventRecorder, topology []cadvisorapi.Node, topo
 	// When policy is none, the scope is not relevant, so we can short circuit here.
 	if topologyPolicyName == PolicyNone {
 		klog.InfoS("Creating topology manager with none policy")
-		return &manager{scope: NewNoneScope()}, nil
+		return &manager{scope: NewNoneScope(recorder)}, nil
 	}
 
 	opts, err := NewPolicyOptions(topologyPolicyOptions)

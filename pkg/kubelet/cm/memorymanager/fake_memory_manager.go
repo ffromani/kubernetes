@@ -86,6 +86,11 @@ func (m *fakeManager) GetMemory(podUID, containerName string) []state.Block {
 	return []state.Block{}
 }
 
+func (m *fakeManager) GetExclusiveResources(pod *v1.Pod, container *v1.Container) []string {
+	klog.InfoS("Get Exclusive Resources", "podUID", pod.UID, "containerName", container.Name)
+	return nil
+}
+
 // NewFakeManager creates empty/fake memory manager
 func NewFakeManager() Manager {
 	return &fakeManager{

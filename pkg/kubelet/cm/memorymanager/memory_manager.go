@@ -92,6 +92,8 @@ type Manager interface {
 
 	// GetMemory returns the memory allocated by a container from NUMA nodes
 	GetMemory(podUID, containerName string) []state.Block
+
+	GetExclusiveResources(pod *v1.Pod, container *v1.Container) []string
 }
 
 type manager struct {
@@ -239,6 +241,14 @@ func (m *manager) GetMemoryNUMANodes(pod *v1.Pod, container *v1.Container) sets.
 
 	klog.InfoS("Memory affinity", "pod", klog.KObj(pod), "containerName", container.Name, "numaNodes", numaNodes)
 	return numaNodes
+}
+
+func (m *manager) GetExclusiveResources(pod *v1.Pod, container *v1.Container) []string {
+	res := sets.New[string]()
+	for _, block := range m.state.GetMemoryBlocks(string(pod.UID), container.Name) {
+		res.Insert(string(block.Type))
+	}
+	return res.UnsortedList()
 }
 
 // Allocate is called to pre-allocate memory resources during Pod admission.

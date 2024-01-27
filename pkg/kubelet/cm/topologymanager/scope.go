@@ -17,6 +17,7 @@ limitations under the License.
 package topologymanager
 
 import (
+	"strings"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 )
 
@@ -137,24 +139,50 @@ func (s *scope) RemoveContainer(containerID string) error {
 	return nil
 }
 
+type allocationMap map[string][]string
+
+func (am allocationMap) Add(resources []string, containerName string) {
+	for _, resource := range resources {
+		am[resource] = append(am[resource], containerName)
+	}
+}
+
+func (am allocationMap) String() string {
+	items := []string{}
+	for resource, contNames := range am {
+		items = append(items, resource+"=["+strings.Join(contNames, ",")+"]")
+	}
+	return strings.Join(items, ";")
+}
+
+func (s *scope) makeAllocationEvent(pod *v1.Pod, allocs allocationMap) {
+	s.recorder.Event(pod, v1.EventTypeNormal, events.AllocatedAlignedResources, allocs.String())
+}
+
 func (s *scope) admitPolicyNone(pod *v1.Pod) lifecycle.PodAdmitResult {
+	allocs := make(allocationMap)
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
-		err := s.allocateAlignedResources(pod, &container)
+		resources, err := s.allocateAlignedResources(pod, &container)
 		if err != nil {
 			return admission.GetPodAdmitResult(err)
 		}
+		allocs.Add(resources, container.Name)
 	}
+	s.makeAllocationEvent(pod, allocs)
 	return admission.GetPodAdmitResult(nil)
 }
 
 // It would be better to implement this function in topologymanager instead of scope
 // but topologymanager do not track providers anymore
-func (s *scope) allocateAlignedResources(pod *v1.Pod, container *v1.Container) error {
+func (s *scope) allocateAlignedResources(pod *v1.Pod, container *v1.Container) ([]string, error) {
+	allocated := []string{}
 	for _, provider := range s.hintProviders {
 		err := provider.Allocate(pod, container)
 		if err != nil {
-			return err
+			return allocated, err
 		}
+		res := provider.GetExclusiveResources(pod, container)
+		allocated = append(allocated, res...)
 	}
-	return nil
+	return allocated, nil
 }

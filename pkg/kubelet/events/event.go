@@ -79,6 +79,7 @@ const (
 	FailedAllocationMemory               = "FailedAllocationMemory"
 	FailedAllocationDevice               = "FailedAllocationDevice"
 	FailedResourceAlignment              = "FailedResourceAlignment"
+	AllocatedAlignedResources            = "AllocatedAlignedResources"
 )
 
 // Image manager event reason list
