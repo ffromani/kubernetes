@@ -17,10 +17,12 @@ limitations under the License.
 package topologymanager
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 )
@@ -33,10 +35,11 @@ type podScope struct {
 var _ Scope = &podScope{}
 
 // NewPodScope returns a pod scope.
-func NewPodScope(policy Policy) Scope {
+func NewPodScope(policy Policy, recorder record.EventRecorder) Scope {
 	return &podScope{
 		scope{
 			name:             podTopologyScope,
+			recorder:         recorder,
 			podTopologyHints: podTopologyHints{},
 			policy:           policy,
 			podMap:           containermap.NewContainerMap(),
@@ -52,16 +55,19 @@ func (s *podScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
 		return admission.GetPodAdmitResult(&TopologyAffinityError{})
 	}
 
+	allocs := make(allocationMap)
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		klog.InfoS("Topology Affinity", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name)
 		s.setTopologyHints(string(pod.UID), container.Name, bestHint)
 
-		err := s.allocateAlignedResources(pod, &container)
+		resources, err := s.allocateAlignedResources(pod, &container)
 		if err != nil {
 			metrics.TopologyManagerAdmissionErrorsTotal.Inc()
 			return admission.GetPodAdmitResult(err)
 		}
+		allocs.Add(resources, container.Name)
 	}
+	s.resourceAllocationSuccessEvent(pod, allocs)
 	return admission.GetPodAdmitResult(nil)
 }
 
@@ -81,5 +87,8 @@ func (s *podScope) calculateAffinity(pod *v1.Pod) (TopologyHint, bool) {
 	providersHints := s.accumulateProvidersHints(pod)
 	bestHint, admit := s.policy.Merge(providersHints)
 	klog.InfoS("PodTopologyHint", "bestHint", bestHint)
+	if !admit {
+		s.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedResourceAlignment, "scope pod best hint %v", bestHint.String())
+	}
 	return bestHint, admit
 }

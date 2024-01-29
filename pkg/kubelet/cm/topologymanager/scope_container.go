@@ -17,10 +17,12 @@ limitations under the License.
 package topologymanager
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/admission"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 )
@@ -33,10 +35,11 @@ type containerScope struct {
 var _ Scope = &containerScope{}
 
 // NewContainerScope returns a container scope.
-func NewContainerScope(policy Policy) Scope {
+func NewContainerScope(policy Policy, recorder record.EventRecorder) Scope {
 	return &containerScope{
 		scope{
 			name:             containerTopologyScope,
+			recorder:         recorder,
 			podTopologyHints: podTopologyHints{},
 			policy:           policy,
 			podMap:           containermap.NewContainerMap(),
@@ -45,6 +48,7 @@ func NewContainerScope(policy Policy) Scope {
 }
 
 func (s *containerScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
+	allocs := make(allocationMap)
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		bestHint, admit := s.calculateAffinity(pod, &container)
 		klog.InfoS("Best TopologyHint", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name)
@@ -56,12 +60,14 @@ func (s *containerScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
 		klog.InfoS("Topology Affinity", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name)
 		s.setTopologyHints(string(pod.UID), container.Name, bestHint)
 
-		err := s.allocateAlignedResources(pod, &container)
+		resources, err := s.allocateAlignedResources(pod, &container)
 		if err != nil {
 			metrics.TopologyManagerAdmissionErrorsTotal.Inc()
 			return admission.GetPodAdmitResult(err)
 		}
+		allocs.Add(resources, container.Name)
 	}
+	s.resourceAllocationSuccessEvent(pod, allocs)
 	return admission.GetPodAdmitResult(nil)
 }
 
@@ -81,5 +87,8 @@ func (s *containerScope) calculateAffinity(pod *v1.Pod, container *v1.Container)
 	providersHints := s.accumulateProvidersHints(pod, container)
 	bestHint, admit := s.policy.Merge(providersHints)
 	klog.InfoS("ContainerTopologyHint", "bestHint", bestHint)
+	if !admit {
+		s.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedResourceAlignment, "scope container %s best hint %v", container.Name, bestHint.String())
+	}
 	return bestHint, admit
 }
