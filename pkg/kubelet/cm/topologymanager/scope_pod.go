@@ -62,6 +62,12 @@ func (s *podScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
 			return admission.GetPodAdmitResult(err)
 		}
 	}
+	if bestHint.Preferred {
+		// increment only if we know we allocate aligned resources. Use 'Preferred' as proxy.
+		// To have a more precise reporting we would probably need to extend the Policy interface
+		// or to make logic on the policy name if really we can't extend the interface.
+		metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignedNUMAZone).Inc()
+	}
 	return admission.GetPodAdmitResult(nil)
 }
 
