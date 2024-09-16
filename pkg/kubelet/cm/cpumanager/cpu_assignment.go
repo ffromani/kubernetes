@@ -722,8 +722,8 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 
 // takeByTopologyUnCoreCachePacked uses the "packed" sorting strategy similar to takeByTopologyNUMAPacked.
 // It includes an additional level of sorting by uncorecache
-func takeByTopologyUnCoreCachePacked(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy) (cpuset.CPUSet, error) {
-	acc := newCPUAccumulator(topo, availableCPUs, numCPUs, cpuSortingStrategy)
+func takeByTopologyUnCoreCachePacked(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
+	acc := newCPUAccumulator(topo, availableCPUs, numCPUs)
 	if acc.isSatisfied() {
 		return acc.result, nil
 	}
@@ -754,12 +754,9 @@ func takeByTopologyUnCoreCachePacked(topo *topology.CPUTopology, availableCPUs c
 
 	// 3. Acquire whole cores, if available and the container requires at least
 	//    a core's-worth of CPUs.
-	//    If `CPUSortingStrategySpread` is specified, skip taking the whole core.
-	if cpuSortingStrategy != CPUSortingStrategySpread {
-		acc.takeFullCores()
-		if acc.isSatisfied() {
-			return acc.result, nil
-		}
+	acc.takeFullCores()
+	if acc.isSatisfied() {
+		return acc.result, nil
 	}
 
 	// 4. Acquire single threads, preferring to fill partially-allocated cores
