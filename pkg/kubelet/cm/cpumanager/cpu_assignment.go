@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
+	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/utils/cpuset"
 )
 
@@ -95,7 +96,7 @@ func standardDeviation(xs []int) float64 {
 type numaOrSocketsFirstFuncs interface {
 	takeFullFirstLevel()
 	takeFullSecondLevel()
-	takeThirdLevel()
+	takeThirdLevel() (int, int)
 	sortAvailableNUMANodes() []int
 	sortAvailableSockets() []int
 	sortAvailableUnCoreCaches() []int
@@ -121,8 +122,8 @@ func (n *numaFirst) takeFullSecondLevel() {
 }
 
 // In Split L3 Topology, we take from the sets of uncorecache as the third level
-func (n *numaFirst) takeThirdLevel() {
-	n.acc.takeUnCoreCache()
+func (n *numaFirst) takeThirdLevel() (int, int) {
+	return n.acc.takeUnCoreCache()
 }
 
 // If NUMA nodes are higher in the memory hierarchy than sockets, then just
@@ -182,8 +183,8 @@ func (s *socketsFirst) takeFullSecondLevel() {
 	s.acc.takeFullNUMANodes()
 }
 
-func (s *socketsFirst) takeThirdLevel() {
-	s.acc.takeUnCoreCache()
+func (s *socketsFirst) takeThirdLevel() (int, int) {
+	return s.acc.takeUnCoreCache()
 }
 
 // If sockets are higher in the memory hierarchy than NUMA nodes, then we need
@@ -513,8 +514,10 @@ func (a *cpuAccumulator) takeFullUnCore() {
 
 // First try to take partial uncorecache (CCD), if available and the request size can fit w/in the uncorecache.
 // Second try to take the full CCD if available and need is at least the size of the uncorecache group.
-func (a *cpuAccumulator) takeUnCoreCache() {
+func (a *cpuAccumulator) takeUnCoreCache() (int, int) {
 	// check if SMT ON
+	part := 0
+	full := 0
 
 	for _, uncore := range a.allUnCoreCache() {
 		numCoresNeeded := a.numCPUsNeeded / a.topo.CPUsPerCore() // this is another new change
@@ -530,14 +533,18 @@ func (a *cpuAccumulator) takeUnCoreCache() {
 		if a.numCPUsNeeded == freeCPUsInUncorecache.Size() {
 			klog.V(4).InfoS("takePartialUncore: claiming cores from Uncorecache ID", "uncore", uncore)
 			a.take(freeCPUsInUncorecache)
+			part += 1
 		}
 		// take full Uncorecache if the numCPUsNeeded is greater the L3 cache size
 		a.takeFullUnCore()
+		full += 1
 
 		if a.isSatisfied() {
-			return
+			return part, full
 		}
 	}
+
+	return part, full
 }
 
 func (a *cpuAccumulator) takeFullCores() {
@@ -747,8 +754,11 @@ func takeByTopologyUnCoreCachePacked(topo *topology.CPUTopology, availableCPUs c
 
 	// 2. Acquire partial uncorecache, if there are enough CPUs available to satisfy the container requirement
 	//    Acquire the full uncorecache, if available and the container requires at least all the CPUs in the uncorecache grouping
-	acc.numaOrSocketsFirst.takeThirdLevel()
+	part, full := acc.numaOrSocketsFirst.takeThirdLevel()
 	if acc.isSatisfied() {
+		if part == 0 && full > 0 {
+			metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignedL3CacheGroup).Inc()
+		}
 		return acc.result, nil
 	}
 

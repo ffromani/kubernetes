@@ -134,8 +134,9 @@ const (
 	InitContainer      = "init_container"
 	EphemeralContainer = "ephemeral_container"
 
-	AlignedPhysicalCPU = "physical_cpu"
-	AlignedNUMAZone    = "numa_zone"
+	AlignedPhysicalCPU  = "physical_cpu"
+	AlignedNUMAZone     = "numa_zone"
+	AlignedL3CacheGroup = "l3_cache_group"
 )
 
 type imageSizeBucket struct {
@@ -921,7 +922,7 @@ var (
 			Help:           "Cumulative number of aligned compute resources allocated to containers by alignment type.",
 			StabilityLevel: metrics.ALPHA,
 		},
-		[]string{"physical_cpu", "numa_zone"},
+		[]string{"physical_cpu", "l3_cache_group", "numa_zone"},
 	)
 )
 
