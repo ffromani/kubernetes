@@ -583,7 +583,7 @@ func (a *cpuAccumulator) takePartialUncore(uncoreID int) {
 
 // First try to take full UncoreCache, if available and need is at least the size of the UncoreCache group.
 // Second try to take the partial UncoreCache if available and the request size can fit w/in the UncoreCache.
-func (a *cpuAccumulator) takeUncoreCache() {
+func (a *cpuAccumulator) takeUncoreCache() cpuAlignment {
 	numCPUsInUncore := a.topo.CPUsPerUncore()
 	for _, uncore := range a.sortAvailableUncoreCaches() {
 		// take full UncoreCache if the CPUs needed is greater than free UncoreCache size
@@ -592,15 +592,16 @@ func (a *cpuAccumulator) takeUncoreCache() {
 		}
 
 		if a.isSatisfied() {
-			return
+			return cpuAlignment{UncoreCache: true}
 		}
 
 		// take partial UncoreCache if the CPUs needed is less than free UncoreCache size
 		a.takePartialUncore(uncore)
 		if a.isSatisfied() {
-			return
+			return cpuAlignment{}
 		}
 	}
+	return cpuAlignment{}
 }
 
 func (a *cpuAccumulator) takeFullCores() {
@@ -700,6 +701,50 @@ func (a *cpuAccumulator) iterateCombinations(n []int, k int, f func([]int) LoopC
 	helper(n, k, 0, []int{}, f)
 }
 
+type cpuAlignment struct {
+	UncoreCache bool
+}
+
+func (ca cpuAlignment) String() string {
+	return fmt.Sprintf("aligned=<uncore:%v>", ca.UncoreCache)
+}
+
+func (ca cpuAlignment) Union(cb cpuAlignment) cpuAlignment {
+	return cpuAlignment{
+		UncoreCache: ca.UncoreCache && cb.UncoreCache,
+	}
+}
+
+type cpuAllocation struct {
+	CPUs    cpuset.CPUSet
+	Aligned cpuAlignment
+}
+
+func (ca cpuAllocation) Equals(cb cpuAllocation) bool {
+	// Aligned is a derived property, so it's sufficient
+	// to check cpuset equality
+	return ca.CPUs.Equals(cb.CPUs)
+}
+
+func (ca cpuAllocation) EqualsCPUSet(cs cpuset.CPUSet) bool {
+	return ca.CPUs.Equals(cs)
+}
+
+func (ca cpuAllocation) Union(cb cpuAllocation) cpuAllocation {
+	return cpuAllocation{
+		CPUs:    ca.CPUs.Union(cb.CPUs),
+		Aligned: ca.Aligned.Union(cb.Aligned),
+	}
+}
+
+func (ca cpuAllocation) String() string {
+	return ca.CPUs.String() + " " + ca.Aligned.String()
+}
+
+func emptyCpuAllocation() cpuAllocation {
+	return cpuAllocation{CPUs: cpuset.New()}
+}
+
 // takeByTopologyNUMAPacked returns a CPUSet containing `numCPUs` CPUs taken from the CPUs in the
 // set `availableCPUs`. `topo` describes how the CPUs are arranged between sockets, NUMA nodes
 // and physical cores (if hyperthreading is on a "CPU" is a thread rather than a full physical
@@ -750,13 +795,15 @@ func (a *cpuAccumulator) iterateCombinations(n []int, k int, f func([]int) LoopC
 // the least amount of free CPUs to the one with the highest amount of free CPUs (i.e. in ascending
 // order of free CPUs). For any NUMA node, the cores are selected from the ones in the socket with
 // the least amount of free CPUs to the one with the highest amount of free CPUs.
-func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy, preferAlignByUncoreCache bool) (cpuset.CPUSet, error) {
+func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy, preferAlignByUncoreCache bool) (cpuAllocation, error) {
 	acc := newCPUAccumulator(topo, availableCPUs, numCPUs, cpuSortingStrategy)
 	if acc.isSatisfied() {
-		return acc.result, nil
+		return cpuAllocation{
+			CPUs: acc.result,
+		}, nil
 	}
 	if acc.isFailed() {
-		return cpuset.New(), fmt.Errorf("not enough cpus available to satisfy request: requested=%d, available=%d", numCPUs, availableCPUs.Size())
+		return emptyCpuAllocation(), fmt.Errorf("not enough cpus available to satisfy request: requested=%d, available=%d", numCPUs, availableCPUs.Size())
 	}
 
 	// Algorithm: topology-aware best-fit
@@ -766,20 +813,27 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 	//    Otherwise pull from sockets first.
 	acc.numaOrSocketsFirst.takeFullFirstLevel()
 	if acc.isSatisfied() {
-		return acc.result, nil
+		return cpuAllocation{
+			CPUs: acc.result,
+		}, nil
 	}
 	acc.numaOrSocketsFirst.takeFullSecondLevel()
 	if acc.isSatisfied() {
-		return acc.result, nil
+		return cpuAllocation{
+			CPUs: acc.result,
+		}, nil
 	}
 
 	// 2. If PreferAlignByUncoreCache is enabled, acquire whole UncoreCaches
 	//    if available and the container requires at least a UncoreCache's-worth
 	//    of CPUs. Otherwise, acquire CPUs from the least amount of UncoreCaches.
 	if preferAlignByUncoreCache {
-		acc.takeUncoreCache()
+		cpuAlign := acc.takeUncoreCache()
 		if acc.isSatisfied() {
-			return acc.result, nil
+			return cpuAllocation{
+				CPUs:    acc.result,
+				Aligned: cpuAlign,
+			}, nil
 		}
 	}
 
@@ -789,7 +843,9 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 	if cpuSortingStrategy != CPUSortingStrategySpread {
 		acc.takeFullCores()
 		if acc.isSatisfied() {
-			return acc.result, nil
+			return cpuAllocation{
+				CPUs: acc.result,
+			}, nil
 		}
 	}
 
@@ -798,10 +854,12 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 	//    allocation.
 	acc.takeRemainingCPUs()
 	if acc.isSatisfied() {
-		return acc.result, nil
+		return cpuAllocation{
+			CPUs: acc.result,
+		}, nil
 	}
 
-	return cpuset.New(), fmt.Errorf("failed to allocate cpus")
+	return emptyCpuAllocation(), fmt.Errorf("failed to allocate cpus")
 }
 
 // takeByTopologyNUMADistributed returns a CPUSet of size 'numCPUs'.
@@ -867,7 +925,7 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 // of size 'cpuGroupSize' according to the algorithm described above. This is
 // important, for example, to ensure that all CPUs (i.e. all hyperthreads) from
 // a single core are allocated together.
-func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuGroupSize int, cpuSortingStrategy CPUSortingStrategy) (cpuset.CPUSet, error) {
+func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuGroupSize int, cpuSortingStrategy CPUSortingStrategy) (cpuAllocation, error) {
 	// If the number of CPUs requested cannot be handed out in chunks of
 	// 'cpuGroupSize', then we just call out the packing algorithm since we
 	// can't distribute CPUs in this chunk size.
@@ -880,10 +938,12 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 	// Otherwise build an accumulator to start allocating CPUs from.
 	acc := newCPUAccumulator(topo, availableCPUs, numCPUs, cpuSortingStrategy)
 	if acc.isSatisfied() {
-		return acc.result, nil
+		return cpuAllocation{
+			CPUs: acc.result,
+		}, nil
 	}
 	if acc.isFailed() {
-		return cpuset.New(), fmt.Errorf("not enough cpus available to satisfy request: requested=%d, available=%d", numCPUs, availableCPUs.Size())
+		return emptyCpuAllocation(), fmt.Errorf("not enough cpus available to satisfy request: requested=%d, available=%d", numCPUs, availableCPUs.Size())
 	}
 
 	// Get the list of NUMA nodes represented by the set of CPUs in 'availableCPUs'.
@@ -1057,8 +1117,8 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 		// size 'cpuGroupSize' from 'bestCombo'.
 		distribution := (numCPUs / len(bestCombo) / cpuGroupSize) * cpuGroupSize
 		for _, numa := range bestCombo {
-			cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, cpuSortingStrategy, false)
-			acc.take(cpus)
+			cpuAlloc, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, cpuSortingStrategy, false)
+			acc.take(cpuAlloc.CPUs)
 		}
 
 		// Then allocate any remaining CPUs in groups of size 'cpuGroupSize'
@@ -1072,8 +1132,8 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 				if acc.details.CPUsInNUMANodes(numa).Size() < cpuGroupSize {
 					continue
 				}
-				cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), cpuGroupSize, cpuSortingStrategy, false)
-				acc.take(cpus)
+				cpusAlloc, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), cpuGroupSize, cpuSortingStrategy, false)
+				acc.take(cpusAlloc.CPUs)
 				remainder -= cpuGroupSize
 			}
 		}
@@ -1081,17 +1141,19 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 		// If we haven't allocated all of our CPUs at this point, then something
 		// went wrong in our accounting and we should error out.
 		if acc.numCPUsNeeded > 0 {
-			return cpuset.New(), fmt.Errorf("accounting error, not enough CPUs allocated, remaining: %v", acc.numCPUsNeeded)
+			return emptyCpuAllocation(), fmt.Errorf("accounting error, not enough CPUs allocated, remaining: %v", acc.numCPUsNeeded)
 		}
 
 		// Likewise, if we have allocated too many CPUs at this point, then something
 		// went wrong in our accounting and we should error out.
 		if acc.numCPUsNeeded < 0 {
-			return cpuset.New(), fmt.Errorf("accounting error, too many CPUs allocated, remaining: %v", acc.numCPUsNeeded)
+			return emptyCpuAllocation(), fmt.Errorf("accounting error, too many CPUs allocated, remaining: %v", acc.numCPUsNeeded)
 		}
 
 		// Otherwise, return the result
-		return acc.result, nil
+		return cpuAllocation{
+			CPUs: acc.result,
+		}, nil
 	}
 
 	// If we never found a combination of NUMA nodes that we could properly
