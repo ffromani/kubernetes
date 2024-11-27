@@ -324,15 +324,10 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	// container belongs in an exclusively allocated pool
 	metrics.CPUManagerPinningRequestsTotal.Inc()
 	defer func() {
-		if rerr != nil {
-			metrics.CPUManagerPinningErrorsTotal.Inc()
+		if rerr == nil {
 			return
 		}
-		if !p.options.FullPhysicalCPUsOnly {
-			// increment only if we know we allocate aligned resources
-			return
-		}
-		metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignScopeContainer, metrics.AlignedPhysicalCPU).Inc()
+		metrics.CPUManagerPinningErrorsTotal.Inc()
 	}()
 
 	if p.options.FullPhysicalCPUsOnly {
@@ -745,7 +740,11 @@ func (p *staticPolicy) initializeMetrics(s state.State) {
 }
 
 func (p *staticPolicy) updateMetricsOnAllocate(cpuAlloc cpuAllocation) {
-	metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignScopeContainer, metrics.AlignedUncoreCache).Inc()
+	// if we got this far, the validation was passed so we can assume we did this allocation
+	metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignScopeContainer, metrics.AlignedPhysicalCPU).Inc()
+	if cpuAlloc.Aligned.UncoreCache {
+		metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignScopeContainer, metrics.AlignedUncoreCache).Inc()
+	}
 
 	ncpus := cpuAlloc.CPUs.Size()
 	metrics.CPUManagerExclusiveCPUsAllocationCount.Add(float64(ncpus))
