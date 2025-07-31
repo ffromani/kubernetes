@@ -214,6 +214,37 @@ func tempSetCurrentKubeletConfig(f *framework.Framework, updateFunction func(ctx
 	})
 }
 
+type updateKubeletOptions struct {
+	deleteStateFiles          bool
+	ensureConsistentReadyNode bool
+	// TODO: add option to use systemctl stop, now we only use systemctl kill for historical reasons
+}
+
+func updateKubeletConfigWithOptions(ctx context.Context, f *framework.Framework, kubeletConfig *kubeletconfig.KubeletConfiguration, opts updateKubletOptions) {
+	GinkgoHelper()
+	// Update the Kubelet configuration.
+	ginkgo.By("Stopping the kubelet")
+	restartKubelet := mustStopKubelet(ctx, f)
+
+	// Delete CPU and memory manager state files to be sure it will not prevent the kubelet restart
+	if oopts.deleteStateFiles {
+		deleteStateFile(cpuManagerStateFile)
+		deleteStateFile(memoryManagerStateFile)
+	}
+
+	framework.ExpectNoError(e2enodekubelet.WriteKubeletConfigFile(kubeletConfig))
+
+	ginkgo.By("Restarting the kubelet")
+	restartKubelet(ctx)
+
+	if opts.ensureConsistentReadyNode {
+		gomega.Consistently(ctx, func(ctx context.Context) bool {
+			return getNodeReadyStatus(ctx, f) && kubeletHealthCheck(kubeletHealthCheckURL)
+		}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(gomega.BeTrueBecause("node keeps reporting ready status"))
+	}
+}
+
+// backward compatibility: TODO: remove/reimplement in terms of updateKubeletConfigWithOptions
 func updateKubeletConfig(ctx context.Context, f *framework.Framework, kubeletConfig *kubeletconfig.KubeletConfiguration, deleteStateFiles bool) {
 	// Update the Kubelet configuration.
 	ginkgo.By("Stopping the kubelet")
