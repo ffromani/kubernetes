@@ -68,47 +68,88 @@ func NewCheckpointState(logger logr.Logger, stateDir, checkpointName, policyName
 	return stateCheckpoint, nil
 }
 
+// migrateV2CheckpointToV3Checkpoint() converts checkpoints from the v2 format to the v3 format
+func (sc *stateCheckpoint) migrateV2CheckpointToV3Checkpoint(src *CPUManagerCheckpointV2, dst *CPUManagerCheckpointV3) error {
+	if src.PolicyName != "" {
+		dst.PolicyName = src.PolicyName
+	}
+	if src.DefaultCPUSet != "" {
+		dst.Global.CPUSet = src.DefaultCPUSet
+	}
+	if dst.PodEntries == nil {
+		dst.PodEntries = make(map[string]CPUManagerPodState)
+	}
+	if dst.ContainerEntries == nil {
+		dst.ContainerEntries = make(map[string]map[string]CPUManagerContainerState)
+	}
+	for podUID, podState := range src.Entries {
+		if _, exists := dst.ContainerEntries[podUID]; !exists {
+			dst.ContainerEntries[podUID] = make(map[string]CPUManagerContainerState)
+		}
+		for containerName, cset := range podState {
+			dst.ContainerEntries[podUID][containerName] = CPUManagerContainerState{
+				CPUSet: cset,
+			}
+		}
+	}
+	return nil
+}
+
+func (sc *stateCheckpoint) loadState() (*CPUManagerCheckpointV3, error) {
+	// happy and hopefully much more frequent happy path first
+	checkpointV3 := newCPUManagerCheckpointV3()
+	err := sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV3)
+	if err == nil {
+		return checkpointV3, nil
+	}
+
+	// supported fallback next
+	checkpointV2 := newCPUManagerCheckpointV2()
+	err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV2)
+	if err == nil {
+		err = sc.migrateV2CheckpointToV3Checkpoint(checkpointV2, checkpointV3)
+		if err != nil {
+			return nil, fmt.Errorf("error migrating v2 checkpoint state to v3 checkpoint state: %w", err)
+		}
+		return checkpointV3, nil
+	}
+
+	// everything failed, give up
+	return nil, err
+}
+
 // restores state from a checkpoint and creates it if it doesn't exist
 func (sc *stateCheckpoint) restoreState() error {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
 	var err error
 
-	checkpointV2 := newCPUManagerCheckpointV2()
-
-	if err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV2); err != nil {
+	checkpointV3, err := sc.loadState()
+	if err != nil {
 		if err == errors.ErrCheckpointNotFound {
 			return sc.storeState()
 		}
 		return err
 	}
 
-	if sc.policyName != checkpointV2.PolicyName {
-		return fmt.Errorf("configured policy %q differs from state checkpoint policy %q", sc.policyName, checkpointV2.PolicyName)
+	if sc.policyName != checkpointV3.PolicyName {
+		return fmt.Errorf("configured policy %q differs from state checkpoint policy %q", sc.policyName, checkpointV3.PolicyName)
 	}
 
-	var tmpDefaultCPUSet cpuset.CPUSet
-	if tmpDefaultCPUSet, err = cpuset.Parse(checkpointV2.DefaultCPUSet); err != nil {
-		return fmt.Errorf("could not parse default cpu set %q: %v", checkpointV2.DefaultCPUSet, err)
+	tmpDefaultCPUSet, err := cpuset.Parse(checkpointV3.Global.CPUSet)
+	if err != nil {
+		return fmt.Errorf("could not parse default cpu set %q: %w", checkpointV3.Global.CPUSet, err)
 	}
 
-	var tmpContainerCPUSet cpuset.CPUSet
-	tmpAssignments := ContainerCPUAssignments{}
-	for pod := range checkpointV2.Entries {
-		tmpAssignments[pod] = make(map[string]cpuset.CPUSet, len(checkpointV2.Entries[pod]))
-		for container, cpuString := range checkpointV2.Entries[pod] {
-			if tmpContainerCPUSet, err = cpuset.Parse(cpuString); err != nil {
-				return fmt.Errorf("could not parse cpuset %q for container %q in pod %q: %v", cpuString, container, pod, err)
-			}
-			tmpAssignments[pod][container] = tmpContainerCPUSet
-		}
+	tmpAssignments, err := checkpointV3.computeCPUAssignments()
+	if err != nil {
+		return err
 	}
 
 	sc.cache.SetDefaultCPUSet(tmpDefaultCPUSet)
 	sc.cache.SetCPUAssignments(tmpAssignments)
 
-	sc.logger.V(2).Info("restored state from checkpoint")
-	sc.logger.V(2).Info("defaultCPUSet", "defaultCpuSet", tmpDefaultCPUSet.String())
+	sc.logger.V(2).Info("restored state from checkpoint", "defaultCpuSet", tmpDefaultCPUSet.String())
 
 	return nil
 }
@@ -116,16 +157,11 @@ func (sc *stateCheckpoint) restoreState() error {
 // saves state to a checkpoint, caller is responsible for locking
 func (sc *stateCheckpoint) storeState() error {
 	checkpoint := NewCPUManagerCheckpoint()
-	checkpoint.PolicyName = sc.policyName
-	checkpoint.DefaultCPUSet = sc.cache.GetDefaultCPUSet().String()
 
-	assignments := sc.cache.GetCPUAssignments()
-	for pod := range assignments {
-		checkpoint.Entries[pod] = make(map[string]string, len(assignments[pod]))
-		for container, cset := range assignments[pod] {
-			checkpoint.Entries[pod][container] = cset.String()
-		}
-	}
+	checkpoint.PolicyName = sc.policyName
+	checkpoint.Global.CPUSet = sc.cache.GetDefaultCPUSet().String()
+	checkpoint.updateFromCPUAssignment(sc.cache.GetCPUAssignments())
+	checkpoint.computeV2CompatFields()
 
 	err := sc.checkpointManager.CreateCheckpoint(sc.checkpointName, checkpoint)
 	if err != nil {
@@ -140,8 +176,7 @@ func (sc *stateCheckpoint) GetCPUSet(podUID string, containerName string) (cpuse
 	sc.mux.RLock()
 	defer sc.mux.RUnlock()
 
-	res, ok := sc.cache.GetCPUSet(podUID, containerName)
-	return res, ok
+	return sc.cache.GetCPUSet(podUID, containerName)
 }
 
 // GetDefaultCPUSet returns default CPU set
