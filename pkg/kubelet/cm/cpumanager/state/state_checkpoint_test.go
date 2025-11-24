@@ -155,49 +155,6 @@ func TestCheckpointStateRestore(t *testing.T) {
 			`could not parse cpuset "asd" for container "container2" in pod "pod": strconv.Atoi: parsing "asd": invalid syntax`,
 			&stateMemory{},
 		},
-		{
-			"Restore checkpoint from checkpoint with v1 checksum",
-			`{
-				"policyName": "none",
-				"defaultCPUSet": "1-3",
-				"checksum": 1694838852
-			}`,
-			"none",
-			containermap.ContainerMap{},
-			"",
-			&stateMemory{
-				defaultCPUSet: cpuset.New(1, 2, 3),
-			},
-		},
-		{
-			"Restore checkpoint with migration",
-			`{
-				"policyName": "none",
-				"defaultCPUSet": "1-3",
-				"entries": {
-					"containerID1": "4-6",
-					"containerID2": "1-3"
-				},
-				"checksum": 3680390589
-			}`,
-			"none",
-			func() containermap.ContainerMap {
-				cm := containermap.NewContainerMap()
-				cm.Add("pod", "container1", "containerID1")
-				cm.Add("pod", "container2", "containerID2")
-				return cm
-			}(),
-			"",
-			&stateMemory{
-				assignments: ContainerCPUAssignments{
-					"pod": map[string]cpuset.CPUSet{
-						"container1": cpuset.New(4, 5, 6),
-						"container2": cpuset.New(1, 2, 3),
-					},
-				},
-				defaultCPUSet: cpuset.New(1, 2, 3),
-			},
-		},
 	}
 
 	// create temp dir

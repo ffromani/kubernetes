@@ -68,51 +68,19 @@ func NewCheckpointState(logger logr.Logger, stateDir, checkpointName, policyName
 	return stateCheckpoint, nil
 }
 
-// migrateV1CheckpointToV2Checkpoint() converts checkpoints from the v1 format to the v2 format
-func (sc *stateCheckpoint) migrateV1CheckpointToV2Checkpoint(src *CPUManagerCheckpointV1, dst *CPUManagerCheckpointV2) error {
-	if src.PolicyName != "" {
-		dst.PolicyName = src.PolicyName
-	}
-	if src.DefaultCPUSet != "" {
-		dst.DefaultCPUSet = src.DefaultCPUSet
-	}
-	for containerID, cset := range src.Entries {
-		podUID, containerName, err := sc.initialContainers.GetContainerRef(containerID)
-		if err != nil {
-			return fmt.Errorf("containerID '%v' not found in initial containers list", containerID)
-		}
-		if dst.Entries == nil {
-			dst.Entries = make(map[string]map[string]string)
-		}
-		if _, exists := dst.Entries[podUID]; !exists {
-			dst.Entries[podUID] = make(map[string]string)
-		}
-		dst.Entries[podUID][containerName] = cset
-	}
-	return nil
-}
-
 // restores state from a checkpoint and creates it if it doesn't exist
 func (sc *stateCheckpoint) restoreState() error {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
 	var err error
 
-	checkpointV1 := newCPUManagerCheckpointV1()
 	checkpointV2 := newCPUManagerCheckpointV2()
 
-	if err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV1); err != nil {
-		checkpointV1 = &CPUManagerCheckpointV1{} // reset it back to 0
-		if err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV2); err != nil {
-			if err == errors.ErrCheckpointNotFound {
-				return sc.storeState()
-			}
-			return err
+	if err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV2); err != nil {
+		if err == errors.ErrCheckpointNotFound {
+			return sc.storeState()
 		}
-	}
-
-	if err = sc.migrateV1CheckpointToV2Checkpoint(checkpointV1, checkpointV2); err != nil {
-		return fmt.Errorf("error migrating v1 checkpoint state to v2 checkpoint state: %s", err)
+		return err
 	}
 
 	if sc.policyName != checkpointV2.PolicyName {
