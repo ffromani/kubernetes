@@ -17,12 +17,13 @@ limitations under the License.
 package state
 
 import (
-	"os"
-	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/require"
+
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
 	testutil "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state/testing"
@@ -157,18 +158,12 @@ func TestCheckpointStateRestore(t *testing.T) {
 		},
 	}
 
-	// create temp dir
-	testingDir, err := os.MkdirTemp("", "cpumanager_state_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(testingDir)
-	// create checkpoint manager for testing
-	cpm, err := checkpointmanager.NewCheckpointManager(testingDir)
-	require.NoErrorf(t, err, "could not create testing checkpoint manager: %v", err)
-
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			// ensure there is no previous checkpoint
-			cpm.RemoveCheckpoint(testingCheckpoint)
+			testingDir := t.TempDir()
+			// create checkpoint manager for testing
+			cpm, err := checkpointmanager.NewCheckpointManager(testingDir)
+			require.NoErrorf(t, err, "could not create testing checkpoint manager: %v", err)
 
 			// prepare checkpoint for testing
 			if strings.TrimSpace(tc.checkpointContent) != "" {
@@ -215,22 +210,9 @@ func TestCheckpointStateStore(t *testing.T) {
 		},
 	}
 
-	// create temp dir
-	testingDir, err := os.MkdirTemp("", "cpumanager_state_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(testingDir)
-
-	cpm, err := checkpointmanager.NewCheckpointManager(testingDir)
-	if err != nil {
-		t.Fatalf("could not create testing checkpoint manager: %v", err)
-	}
-
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			// ensure there is no previous checkpoint
-			cpm.RemoveCheckpoint(testingCheckpoint)
+			testingDir := t.TempDir()
 
 			logger, _ := ktesting.NewTestContext(t)
 			cs1, err := NewCheckpointState(logger, testingDir, testingCheckpoint, "none", nil)
@@ -289,22 +271,9 @@ func TestCheckpointStateHelpers(t *testing.T) {
 		},
 	}
 
-	// create temp dir
-	testingDir, err := os.MkdirTemp("", "cpumanager_state_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(testingDir)
-
-	cpm, err := checkpointmanager.NewCheckpointManager(testingDir)
-	if err != nil {
-		t.Fatalf("could not create testing checkpoint manager: %v", err)
-	}
-
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			// ensure there is no previous checkpoint
-			cpm.RemoveCheckpoint(testingCheckpoint)
+			testingDir := t.TempDir()
 
 			logger, _ := ktesting.NewTestContext(t)
 			state, err := NewCheckpointState(logger, testingDir, testingCheckpoint, "none", nil)
@@ -350,11 +319,7 @@ func TestCheckpointStateClear(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			// create temp dir
-			testingDir, err := os.MkdirTemp("", "cpumanager_state_test")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer os.RemoveAll(testingDir)
+			testingDir := t.TempDir()
 
 			logger, _ := ktesting.NewTestContext(t)
 			state, err := NewCheckpointState(logger, testingDir, testingCheckpoint, "none", nil)
@@ -389,7 +354,7 @@ func AssertStateEqual(t *testing.T, sf State, sm State) {
 
 	cpuassignmentSf := sf.GetCPUAssignments()
 	cpuassignmentSm := sm.GetCPUAssignments()
-	if !reflect.DeepEqual(cpuassignmentSf, cpuassignmentSm) {
-		t.Errorf("State CPU assignments mismatch. Have %s, want %s", cpuassignmentSf, cpuassignmentSm)
+	if diff := cmp.Diff(cpuassignmentSf, cpuassignmentSm, cmpopts.IgnoreUnexported(cpuset.CPUSet{})); diff != "" {
+		t.Errorf("State CPU assignments mismatch. diff=%v", diff)
 	}
 }
