@@ -1029,55 +1029,30 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 			cpuCount := minCPUCapacity + reservedCPUs.Size() + 1
 			skipIfAllocatableCPUsLessThan(getLocalNode(ctx, f), cpuCount)
 
-			// check if the node processor architecture has split or monolithic uncore cache.
-			// prefer-align-cpus-by-uncore-cache can be enabled on non-split uncore cache processors
-			// with no change to default static behavior
-			allocatableCPUs := cpuDetailsFromNode(getLocalNode(ctx, f)).Allocatable
-			hasSplitUncore := (allocatableCPUs > int64(uncoreGroupSize))
+			// on split uncore: request one less cpu than a full uncore cache's worth
+			// on monolithic uncore: uncoreGroupSize is socket's worth of CPUs, subtract (minCPUCapacity + 1)
+			cpuRequestCount := uncoreGroupSize - 1
+			if !hasSplitUncoreCache(getLocalNode(ctx, f), uncoreGroupSize) {
+				cpuRequestCount = uncoreGroupSize - (minCPUCapacity + 1)
+			}
+			cpuRequest := fmt.Sprintf("%d000m", cpuRequestCount)
 
-			if hasSplitUncore {
-				// create a container that requires one less cpu than a full uncore cache's worth of cpus
-				// assume total shared CPUs of a single uncore cache will always be an even integer
-				cpuRequest := fmt.Sprintf("%d000m", (uncoreGroupSize - 1))
-				ginkgo.By(fmt.Sprintf("creating the testing pod cpuRequest=%v", cpuRequest))
-				pod := makeCPUManagerPod("gu-pod", []ctnAttribute{
-					{
-						ctnName:    "gu-container-pos",
-						cpuRequest: cpuRequest,
-						cpuLimit:   cpuRequest,
-					},
-				})
-				ginkgo.By("creating the test pod")
-				pod = createPodSync(ctx, pod)
+			ginkgo.By(fmt.Sprintf("creating the testing pod cpuRequest=%v", cpuRequest))
+			pod := makeCPUManagerPod("gu-pod", []ctnAttribute{
+				{
+					ctnName:    "gu-container-pos",
+					cpuRequest: cpuRequest,
+					cpuLimit:   cpuRequest,
+				},
+			})
+			ginkgo.By("creating the test pod")
+			pod = createPodSync(ctx, pod)
 
-				ginkgo.By("validating each container in the testing pod")
-				for _, cnt := range pod.Spec.Containers {
-					ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
+			ginkgo.By("validating each container in the testing pod")
+			for _, cnt := range pod.Spec.Containers {
+				ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
 
-					gomega.Expect(pod).To(HaveContainerCPUsWithSameUncoreCacheID(cnt.Name))
-				}
-			} else {
-				// for node with monolithic uncore cache processor
-				// uncoreGroupSize will be socket's worth of CPUs
-				// subtract (minCPUCapacity + 1) CPU resource constraint
-				cpuRequest := fmt.Sprintf("%d000m", (uncoreGroupSize - (minCPUCapacity + 1)))
-				ginkgo.By(fmt.Sprintf("creating the testing pod cpuRequest=%v", cpuRequest))
-				pod := makeCPUManagerPod("gu-pod", []ctnAttribute{
-					{
-						ctnName:    "gu-container-pos",
-						cpuRequest: cpuRequest,
-						cpuLimit:   cpuRequest,
-					},
-				})
-				ginkgo.By("creating the test pod")
-				pod = createPodSync(ctx, pod)
-
-				ginkgo.By("validating each container in the testing pod")
-				for _, cnt := range pod.Spec.Containers {
-					ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
-
-					gomega.Expect(pod).To(HaveContainerCPUsWithSameUncoreCacheID(cnt.Name))
-				}
+				gomega.Expect(pod).To(HaveContainerCPUsWithSameUncoreCacheID(cnt.Name))
 			}
 		})
 	})
@@ -1296,56 +1271,25 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					},
 				}))
 
-				// check if the node processor architecture has split or monolithic uncore cache.
-				// prefer-align-cpus-by-uncore-cache can be enabled on non-split uncore cache processors
-				// with no change to default static behavior
-				allocatableCPUs := cpuDetailsFromNode(getLocalNode(ctx, f)).Allocatable
-				hasSplitUncore := (allocatableCPUs > int64(uncoreGroupSize))
-
-				if hasSplitUncore {
-					// for node with split uncore cache processor
-					// create a pod that requires a full uncore cache worth of CPUs
-					ctnAttrs := []ctnAttribute{
+				if hasSplitUncoreCache(getLocalNode(ctx, f), uncoreGroupSize) {
+					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", []ctnAttribute{
 						{
 							ctnName:    "test-gu-container-align-cpus-by-uncore-cache-on-split-uncore",
 							cpuRequest: fmt.Sprintf("%d", uncoreGroupSize),
 							cpuLimit:   fmt.Sprintf("%d", uncoreGroupSize),
 						},
-					}
-					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
+					})
 					ginkgo.By("creating the test pod")
 					pod = createPodSync(ctx, pod)
-
-					// 'prefer-align-cpus-by-uncore-cache' policy options will attempt at best-effort to allocate cpus
-					// so that distribution across uncore caches is minimized. Since the test container is requesting a full
-					// uncore cache worth of cpus and CPU0 is part of the reserved CPUset and not allocatable, the policy will attempt
-					// to allocate cpus from the next available uncore cache
-
-					for _, cnt := range pod.Spec.Containers {
-						ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
-
-						gomega.Expect(pod).To(HaveContainerCPUsAlignedTo(cnt.Name, smtLevel))
-						cpus, err := getContainerAllowedCPUs(pod, cnt.Name, false)
-						framework.ExpectNoError(err, "cannot get cpus allocated to pod %s/%s cnt %s", pod.Namespace, pod.Name, cnt.Name)
-
-						siblingsCPUs := makeThreadSiblingCPUSet(cpus)
-						gomega.Expect(pod).To(HaveContainerCPUsEqualTo(cnt.Name, siblingsCPUs))
-
-						gomega.Expect(pod).To(HaveContainerCPUsWithSameUncoreCacheID(cnt.Name))
-						gomega.Expect(pod).ToNot(HaveContainerCPUsShareUncoreCacheWith(cnt.Name, reservedCPUs))
-					}
+					gomega.Expect(pod).To(HaveCPUsAlignedToSplitUncore(smtLevel, reservedCPUs))
 				} else {
-					// for node with monolithic uncore cache processor
-					// expect default static behavior with pcpu-only policy enabled
-					// and prefer-align-cpus-by-uncore-cache enabled
-					ctnAttrs := []ctnAttribute{
+					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", []ctnAttribute{
 						{
 							ctnName:    "test-gu-container-align-cpus-by-uncore-cache-on-mono-uncore",
 							cpuRequest: "2000m",
 							cpuLimit:   "2000m",
 						},
-					}
-					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
+					})
 					ginkgo.By("creating the test pod")
 					pod = createPodSync(ctx, pod)
 
@@ -1384,56 +1328,25 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					},
 				}))
 
-				// check if the node processor architecture has split or monolithic uncore cache.
-				// prefer-align-cpus-by-uncore-cache can be enabled on non-split uncore cache processors
-				// with no change to default static behavior
-				allocatableCPUs := cpuDetailsFromNode(getLocalNode(ctx, f)).Allocatable
-				hasSplitUncore := (allocatableCPUs > int64(uncoreGroupSize))
-
-				if hasSplitUncore {
-					// for node with split uncore cache processor
-					// create a pod that requires a full uncore cache worth of CPUs
-					ctnAttrs := []ctnAttribute{
+				if hasSplitUncoreCache(getLocalNode(ctx, f), uncoreGroupSize) {
+					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", []ctnAttribute{
 						{
 							ctnName:    "test-gu-container-align-cpus-by-uncore-cache-on-split-uncore",
 							cpuRequest: fmt.Sprintf("%d", uncoreGroupSize),
 							cpuLimit:   fmt.Sprintf("%d", uncoreGroupSize),
 						},
-					}
-					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
+					})
 					ginkgo.By("creating the test pod")
 					pod = createPodSync(ctx, pod)
-
-					// 'prefer-align-cpus-by-uncore-cache' policy options will attempt at best-effort to allocate cpus
-					// so that distribution across uncore caches is minimized. Since the test container is requesting a full
-					// uncore cache worth of cpus and CPU0 is part of the reserved CPUset and not allocatable, the policy will attempt
-					// to allocate cpus from the next available uncore cache
-
-					for _, cnt := range pod.Spec.Containers {
-						ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
-
-						gomega.Expect(pod).To(HaveContainerCPUsAlignedTo(cnt.Name, smtLevel))
-						cpus, err := getContainerAllowedCPUs(pod, cnt.Name, false)
-						framework.ExpectNoError(err, "cannot get cpus allocated to pod %s/%s cnt %s", pod.Namespace, pod.Name, cnt.Name)
-
-						siblingsCPUs := makeThreadSiblingCPUSet(cpus)
-						gomega.Expect(pod).To(HaveContainerCPUsEqualTo(cnt.Name, siblingsCPUs))
-
-						gomega.Expect(pod).To(HaveContainerCPUsWithSameUncoreCacheID(cnt.Name))
-						gomega.Expect(pod).ToNot(HaveContainerCPUsShareUncoreCacheWith(cnt.Name, reservedCPUs))
-					}
+					gomega.Expect(pod).To(HaveCPUsAlignedToSplitUncore(smtLevel, reservedCPUs))
 				} else {
-					// for node with monolithic uncore cache processor
-					// expect default static packed behavior
-					// when prefer-align-cpus-by-uncore-cache enabled
-					ctnAttrs := []ctnAttribute{
+					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", []ctnAttribute{
 						{
 							ctnName:    "test-gu-container-align-cpus-by-uncore-cache-on-mono-uncore",
 							cpuRequest: "1000m",
 							cpuLimit:   "1000m",
 						},
-					}
-					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
+					})
 					ginkgo.By("creating the test pod")
 					pod = createPodSync(ctx, pod)
 
@@ -1441,7 +1354,6 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					for _, cnt := range pod.Spec.Containers {
 						ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
 
-						// expect allocated CPUs to be on the same uncore cache
 						gomega.Expect(pod).To(HaveContainerCPUsWithSameUncoreCacheID(cnt.Name))
 						gomega.Expect(pod).ToNot(HaveContainerCPUsOverlapWith("test-gu-container-align-cpus-by-uncore-cache-on-mono-uncore", reservedCPUs))
 					}
@@ -3454,9 +3366,53 @@ func HaveContainerCPUsShareUncoreCacheWith(ctnName string, ref cpuset.CPUSet) ty
 	)
 }
 
-// HavePodExclusiveCPUs performs a pod-level check for CPU allocation. Verifies
-// the total number of unique CPUs assigned across all containers in the pod equals
-// the expected count.
+func HaveCPUsAlignedToSplitUncore(smtLevel int, reservedCPUs cpuset.CPUSet) types.GomegaMatcher {
+	return gcustom.MakeMatcher(func(pod *v1.Pod) (bool, error) {
+		reservedUncoreIDs := sets.New[int64]()
+		for _, cpu := range reservedCPUs.UnsortedList() {
+			uncoreID, err := uncoreCacheIDFromSysFS(cpu)
+			if err != nil {
+				return false, fmt.Errorf("failed to read uncore cache ID for reserved CPU %d: %w", cpu, err)
+			}
+			reservedUncoreIDs.Insert(uncoreID)
+		}
+
+		for _, cnt := range pod.Spec.Containers {
+			cpus, err := getContainerAllowedCPUs(pod, cnt.Name, false)
+			if err != nil {
+				return false, fmt.Errorf("container %s: getContainerAllowedCPUs failed: %w", cnt.Name, err)
+			}
+
+			if cpus.Size()%smtLevel != 0 {
+				return false, fmt.Errorf("container %s CPUs %s not aligned to SMT level %d", cnt.Name, cpus, smtLevel)
+			}
+
+			siblingsCPUs := makeThreadSiblingCPUSet(cpus)
+			if !cpus.Equals(siblingsCPUs) {
+				return false, fmt.Errorf("container %s CPUs %s missing thread siblings (full set would be %s)", cnt.Name, cpus, siblingsCPUs)
+			}
+
+			var commonCacheID *int64
+			for _, cpu := range cpus.List() {
+				uncoreID, err := uncoreCacheIDFromSysFS(cpu)
+				if err != nil {
+					return false, fmt.Errorf("failed to read uncore cache ID for CPU %d: %w", cpu, err)
+				}
+				if commonCacheID == nil {
+					commonCacheID = &uncoreID
+				} else if *commonCacheID != uncoreID {
+					return false, fmt.Errorf("container %s CPU %d has uncore cache ID %d, expected %d", cnt.Name, cpu, uncoreID, *commonCacheID)
+				}
+			}
+
+			if commonCacheID != nil && reservedUncoreIDs.Has(*commonCacheID) {
+				return false, fmt.Errorf("container %s uncore cache ID %d shared with reserved CPUs %s", cnt.Name, *commonCacheID, reservedCPUs)
+			}
+		}
+		return true, nil
+	}).WithMessage("to have all container CPUs aligned to split uncore cache, with complete thread siblings, without sharing uncore cache with reserved CPUs")
+}
+
 func HavePodExclusiveCPUs(expectedTotalCPUs int) types.GomegaMatcher {
 	return gcustom.MakeMatcher(func(pod *v1.Pod) (bool, error) {
 		allCPUSets := make(map[string]cpuset.CPUSet)
@@ -3723,6 +3679,11 @@ func cpuDetailsFromNode(node *v1.Node) nodeCPUDetails {
 		Allocatable: cpuCap.Value() - cpuRes.Value(),
 		Reserved:    cpuRes.Value(),
 	}
+}
+
+func hasSplitUncoreCache(node *v1.Node, uncoreGroupSize int) bool {
+	allocatableCPUs := cpuDetailsFromNode(node).Allocatable
+	return allocatableCPUs > int64(uncoreGroupSize)
 }
 
 // smtLevelFromSysFS returns the number of symmetrical multi-thread (SMT) execution units the processor provides.
