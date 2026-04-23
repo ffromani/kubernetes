@@ -834,8 +834,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			ginkgo.By("checking if the expected cpuset was assigned")
 
@@ -863,8 +862,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			ginkgo.By("checking if the expected cpuset was assigned")
 
@@ -895,8 +893,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the guaranteed test pod")
-			podGu = e2epod.NewPodClient(f).CreateSync(ctx, podGu)
-			podMap[string(podGu.UID)] = podGu
+			podGu = createPodSync(ctx, podGu)
 
 			podBu := makeCPUManagerPod("non-gu-pod", []ctnAttribute{
 				{
@@ -906,8 +903,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the burstable test pod")
-			podBu = e2epod.NewPodClient(f).CreateSync(ctx, podBu)
-			podMap[string(podBu.UID)] = podBu
+			podBu = createPodSync(ctx, podBu)
 
 			ginkgo.By("checking if the expected cpuset was assigned")
 
@@ -998,8 +994,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			ginkgo.By("validating each container in the testing pod")
 			for _, cnt := range pod.Spec.Containers {
@@ -1053,8 +1048,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					},
 				})
 				ginkgo.By("creating the test pod")
-				pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-				podMap[string(pod.UID)] = pod
+				pod = createPodSync(ctx, pod)
 
 				ginkgo.By("validating each container in the testing pod")
 				for _, cnt := range pod.Spec.Containers {
@@ -1076,8 +1070,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					},
 				})
 				ginkgo.By("creating the test pod")
-				pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-				podMap[string(pod.UID)] = pod
+				pod = createPodSync(ctx, pod)
 
 				ginkgo.By("validating each container in the testing pod")
 				for _, cnt := range pod.Spec.Containers {
@@ -1127,8 +1120,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			ginkgo.By("checking if the expected cpuset was assigned")
 
@@ -1229,8 +1221,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					},
 				})
 				ginkgo.By("creating the testing pod")
-				pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-				podMap[string(pod.UID)] = pod
+				pod = createPodSync(ctx, pod)
 
 				usableCPUs := onlineCPUs.Difference(reservedCPUs)
 
@@ -1280,8 +1271,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				}
 				pod := makeCPUManagerPod("test-pod-uncore-cache-alignment-disabled", ctnAttrs)
 				ginkgo.By("creating the test pod")
-				pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-				podMap[string(pod.UID)] = pod
+				pod = createPodSync(ctx, pod)
 
 				ginkgo.By("validating each container in the testing pod")
 				for _, cnt := range pod.Spec.Containers {
@@ -1324,8 +1314,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					}
 					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
 					ginkgo.By("creating the test pod")
-					pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-					podMap[string(pod.UID)] = pod
+					pod = createPodSync(ctx, pod)
 
 					// 'prefer-align-cpus-by-uncore-cache' policy options will attempt at best-effort to allocate cpus
 					// so that distribution across uncore caches is minimized. Since the test container is requesting a full
@@ -1358,8 +1347,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					}
 					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
 					ginkgo.By("creating the test pod")
-					pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-					podMap[string(pod.UID)] = pod
+					pod = createPodSync(ctx, pod)
 
 					ginkgo.By("validating each container in the testing pod")
 					for _, cnt := range pod.Spec.Containers {
@@ -1414,8 +1402,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					}
 					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
 					ginkgo.By("creating the test pod")
-					pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-					podMap[string(pod.UID)] = pod
+					pod = createPodSync(ctx, pod)
 
 					// 'prefer-align-cpus-by-uncore-cache' policy options will attempt at best-effort to allocate cpus
 					// so that distribution across uncore caches is minimized. Since the test container is requesting a full
@@ -1448,8 +1435,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 					}
 					pod := makeCPUManagerPod("test-pod-align-cpus-by-uncore-cache", ctnAttrs)
 					ginkgo.By("creating the test pod")
-					pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-					podMap[string(pod.UID)] = pod
+					pod = createPodSync(ctx, pod)
 
 					ginkgo.By("validating each container in the testing pod")
 					for _, cnt := range pod.Spec.Containers {
@@ -1495,8 +1481,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				}
 				pod := makeCPUManagerPod("test-pod-distribute-cpus-across-numa-disabled", ctnAttrs)
 				ginkgo.By("creating the test pod")
-				pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-				podMap[string(pod.UID)] = pod
+				pod = createPodSync(ctx, pod)
 
 				ginkgo.By("validating each container in the testing pod")
 				for _, cnt := range pod.Spec.Containers {
@@ -1548,8 +1533,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				}
 				pod := makeCPUManagerPod("test-pod-distribute-cpus-across-numa", ctnAttrs)
 				ginkgo.By("creating the test pod")
-				pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-				podMap[string(pod.UID)] = pod
+				pod = createPodSync(ctx, pod)
 
 				for _, cnt := range pod.Spec.Containers {
 					ginkgo.By(fmt.Sprintf("validating the container %s on pod %s", cnt.Name, pod.Name))
@@ -1591,8 +1575,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("max"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "max"))
@@ -1611,8 +1594,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("max"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "max"))
@@ -1631,8 +1613,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("max"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "max"))
@@ -1655,8 +1636,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("50000"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "50000"))
@@ -1674,8 +1654,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("50000"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "50000"))
@@ -1698,8 +1677,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("170000"))
 			gomega.Expect(pod).To(HaveContainerQuota("gu-container-non-int-values-1", "50000"))
@@ -1723,8 +1701,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("max"))
 			gomega.Expect(pod).To(HaveContainerQuota("gu-container-non-int-values", "50000"))
@@ -1761,8 +1738,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("100000"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "100000"))
@@ -1781,8 +1757,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("300000"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "300000"))
@@ -1805,8 +1780,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("50000"))
 			gomega.Expect(pod).To(HaveContainerQuota(ctnName, "50000"))
@@ -1829,8 +1803,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuota("150000"))
 			gomega.Expect(pod).To(HaveContainerQuota("gu-container-non-int-values", "50000"))
@@ -1874,8 +1847,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuotaWithPeriod("25000", testCFSPeriod))
 			gomega.Expect(pod).To(HaveContainerQuotaWithPeriod(ctnName, "25000", testCFSPeriod))
@@ -1893,8 +1865,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				},
 			})
 			ginkgo.By("creating the test pod")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			gomega.Expect(pod).To(HaveSandboxQuotaWithPeriod("25000", testCFSPeriod))
 			gomega.Expect(pod).To(HaveContainerQuotaWithPeriod(ctnName, "25000", testCFSPeriod))
@@ -1933,8 +1904,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 			}
 			pod := makeCPUManagerInitContainersPod("gu-pod", ctrAttrs)
 			ginkgo.By("running a Gu pod with a regular init container and a restartable init container")
-			pod = e2epod.NewPodClient(f).CreateSync(ctx, pod)
-			podMap[string(pod.UID)] = pod
+			pod = createPodSync(ctx, pod)
 
 			// when we get there the real initcontainer terminated, so we can only check its logs
 			ginkgo.By("checking if the expected cpuset was assigned")
