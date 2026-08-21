@@ -557,7 +557,7 @@ func (m *ManagerImpl) readCheckpoint(logger klog.Logger) error {
 	defer m.mutex.Unlock()
 	podDevices, registeredDevs := cp.GetData()
 	m.podDevices.fromCheckpointData(logger, podDevices)
-	m.allocatedDevices = m.podDevices.devices()
+	m.regenerateAllocatedDevicesLocked()
 	for resource := range registeredDevs {
 		// During start up, creates empty healthyDevices list so that the resource capacity
 		// will stay zero till the corresponding device plugin re-registers.
@@ -578,6 +578,43 @@ func (m *ManagerImpl) getCheckpoint() (checkpoint.DeviceManagerCheckpoint, error
 	return cp, err
 }
 
+func (m *ManagerImpl) regenerateAllocatedDevicesLocked() {
+	m.allocatedDevices = m.podDevices.devicesInUse()
+}
+
+func (m *ManagerImpl) devicesToPerNUMALocked(resource string, devices sets.Set[string]) checkpoint.DevicesPerNUMA {
+	devicesPerNUMA := checkpoint.NewDevicesPerNUMA()
+	for dev := range devices {
+		if m.allDevices[resource][dev].Topology == nil || len(m.allDevices[resource][dev].Topology.Nodes) == 0 {
+			devicesPerNUMA[nodeWithoutTopology] = append(devicesPerNUMA[nodeWithoutTopology], dev)
+			continue
+		}
+		for idx := range m.allDevices[resource][dev].Topology.Nodes {
+			node := m.allDevices[resource][dev].Topology.Nodes[idx]
+			devicesPerNUMA[node.ID] = append(devicesPerNUMA[node.ID], dev)
+		}
+	}
+	return devicesPerNUMA
+}
+
+func (m *ManagerImpl) reserveDevicesLocked(podUID, contName, resource string, devices sets.Set[string]) {
+	if devices == nil || devices.Len() == 0 {
+		return
+	}
+	m.podDevices.insertReservation(podUID, contName, resource, m.devicesToPerNUMALocked(resource, devices))
+	m.regenerateAllocatedDevicesLocked()
+}
+
+func (m *ManagerImpl) releaseDevicesLocked(podUID, contName, resource string) {
+	m.podDevices.deleteResource(podUID, contName, resource)
+	m.regenerateAllocatedDevicesLocked()
+}
+
+func (m *ManagerImpl) commitDevicesLocked(podUID, contName, resource string, devices checkpoint.DevicesPerNUMA, resp *pluginapi.ContainerAllocateResponse) {
+	m.podDevices.insert(podUID, contName, resource, devices, resp)
+	m.regenerateAllocatedDevicesLocked()
+}
+
 // UpdateAllocatedDevices frees any Devices that are bound to terminated pods.
 func (m *ManagerImpl) UpdateAllocatedDevices(logger klog.Logger) {
 	activePods := m.activePods()
@@ -596,7 +633,7 @@ func (m *ManagerImpl) UpdateAllocatedDevices(logger klog.Logger) {
 	logger.V(3).Info("Pods to be removed", "podUIDs", sets.List(podsToBeRemoved))
 	m.podDevices.delete(sets.List(podsToBeRemoved))
 	// Regenerated allocatedDevices after we update pod allocation information.
-	m.allocatedDevices = m.podDevices.devices()
+	m.regenerateAllocatedDevicesLocked()
 }
 
 // Returns list of device Ids we need to allocate with Allocate rpc call.
@@ -669,24 +706,30 @@ func (m *ManagerImpl) devicesToAllocate(ctx context.Context, podUID, contName, r
 	// Declare the list of allocated devices.
 	// This will be populated and returned below.
 	allocated := sets.New[string]()
+	clearReservation := func() {
+		if allocated.Len() == 0 {
+			return
+		}
+		m.releaseDevicesLocked(podUID, contName, resource)
+	}
 
 	// Create a closure to help with device allocation
 	// Returns 'true' once no more devices need to be allocated.
 	allocateRemainingFrom := func(devices sets.Set[string]) bool {
-		// When we call callGetPreferredAllocationIfAvailable below, we will release
-		// the lock and call the device plugin. If someone calls ListResource concurrently,
-		// device manager will recalculate the allocatedDevices map. Some entries with
-		// empty sets may be removed, so we reinit here.
-		if m.allocatedDevices[resource] == nil {
-			m.allocatedDevices[resource] = sets.New[string]()
-		}
+		reserved := false
 		for device := range devices.Difference(allocated) {
-			m.allocatedDevices[resource].Insert(device)
 			allocated.Insert(device)
+			reserved = true
 			needed--
 			if needed == 0 {
+				if reserved {
+					m.reserveDevicesLocked(podUID, contName, resource, allocated)
+				}
 				return true
 			}
+		}
+		if reserved {
+			m.reserveDevicesLocked(podUID, contName, resource, allocated)
 		}
 		return false
 	}
@@ -701,6 +744,7 @@ func (m *ManagerImpl) devicesToAllocate(ctx context.Context, podUID, contName, r
 	// Gets Available devices.
 	available := m.healthyDevices[resource].Difference(devicesInUse)
 	if available.Len() < needed {
+		clearReservation()
 		return nil, fmt.Errorf("requested number of devices unavailable for %s. Requested: %d, Available: %d", resource, needed, available.Len())
 	}
 
@@ -713,6 +757,7 @@ func (m *ManagerImpl) devicesToAllocate(ctx context.Context, podUID, contName, r
 		// First allocate from the preferred devices list (if available).
 		preferred, err := m.callGetPreferredAllocationIfAvailable(ctx, podUID, contName, resource, aligned.Union(allocated), allocated, required)
 		if err != nil {
+			clearReservation()
 			return nil, err
 		}
 		if allocateRemainingFrom(preferred.Intersection(aligned)) {
@@ -724,6 +769,7 @@ func (m *ManagerImpl) devicesToAllocate(ctx context.Context, podUID, contName, r
 			return allocated, nil
 		}
 
+		clearReservation()
 		return nil, fmt.Errorf("unexpectedly allocated less resources than required. Requested: %d, Got: %d", required, required-needed)
 	}
 
@@ -738,6 +784,7 @@ func (m *ManagerImpl) devicesToAllocate(ctx context.Context, podUID, contName, r
 	// remaining devices to allocate.
 	preferred, err := m.callGetPreferredAllocationIfAvailable(ctx, podUID, contName, resource, available.Union(allocated), allocated, required)
 	if err != nil {
+		clearReservation()
 		return nil, err
 	}
 	if allocateRemainingFrom(preferred.Intersection(available)) {
@@ -754,6 +801,7 @@ func (m *ManagerImpl) devicesToAllocate(ctx context.Context, podUID, contName, r
 		return allocated, nil
 	}
 
+	clearReservation()
 	return nil, fmt.Errorf("unexpectedly allocated less resources than required. Requested: %d, Got: %d", required, required-needed)
 }
 
@@ -899,9 +947,7 @@ func (m *ManagerImpl) allocateContainerResources(ctx context.Context, pod *v1.Po
 		startRPCTime := time.Now()
 		// Manager.Allocate involves RPC calls to device plugin, which
 		// could be heavy-weight. Therefore we want to perform this operation outside
-		// mutex lock. Note if Allocate call fails, we may leave container resources
-		// partially allocated for the failed container. We rely on UpdateAllocatedDevices()
-		// to garbage collect these resources later. Another side effect is that if
+		// mutex lock. Another side effect is that if
 		// we have X resource A and Y resource B in total, and two containers, container1
 		// and container2 both require X resource A and Y resource B. Both allocation
 		// requests may fail if we serve them in mixed order.
@@ -914,7 +960,7 @@ func (m *ManagerImpl) allocateContainerResources(ctx context.Context, pod *v1.Po
 		m.mutex.Unlock()
 		if !ok {
 			m.mutex.Lock()
-			m.allocatedDevices = m.podDevices.devices()
+			m.releaseDevicesLocked(podUID, contName, resource)
 			m.mutex.Unlock()
 			return fmt.Errorf("unknown Device Plugin %s", resource)
 		}
@@ -926,33 +972,23 @@ func (m *ManagerImpl) allocateContainerResources(ctx context.Context, pod *v1.Po
 		resp, err := eI.e.allocate(ctx, devs)
 		metrics.DevicePluginAllocationDuration.WithLabelValues(resource).Observe(metrics.SinceInSeconds(startRPCTime))
 		if err != nil {
-			// In case of allocation failure, we want to restore m.allocatedDevices
-			// to the actual allocated state from m.podDevices.
 			m.mutex.Lock()
-			m.allocatedDevices = m.podDevices.devices()
+			m.releaseDevicesLocked(podUID, contName, resource)
 			m.mutex.Unlock()
 			return err
 		}
 
 		if len(resp.ContainerResponses) == 0 {
+			m.mutex.Lock()
+			m.releaseDevicesLocked(podUID, contName, resource)
+			m.mutex.Unlock()
 			return fmt.Errorf("no containers return in allocation response %v", resp)
 		}
 
-		allocDevicesWithNUMA := checkpoint.NewDevicesPerNUMA()
-		// Update internal cached podDevices state.
 		m.mutex.Lock()
-		for dev := range allocDevices {
-			if m.allDevices[resource][dev].Topology == nil || len(m.allDevices[resource][dev].Topology.Nodes) == 0 {
-				allocDevicesWithNUMA[nodeWithoutTopology] = append(allocDevicesWithNUMA[nodeWithoutTopology], dev)
-				continue
-			}
-			for idx := range m.allDevices[resource][dev].Topology.Nodes {
-				node := m.allDevices[resource][dev].Topology.Nodes[idx]
-				allocDevicesWithNUMA[node.ID] = append(allocDevicesWithNUMA[node.ID], dev)
-			}
-		}
+		allocDevicesWithNUMA := m.devicesToPerNUMALocked(resource, allocDevices)
+		m.commitDevicesLocked(podUID, contName, resource, allocDevicesWithNUMA, resp.ContainerResponses[0])
 		m.mutex.Unlock()
-		m.podDevices.insert(podUID, contName, resource, allocDevicesWithNUMA, resp.ContainerResponses[0])
 	}
 
 	if needsUpdateCheckpoint {

@@ -29,7 +29,16 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 )
 
+type allocationPhase string
+
+const (
+	allocationReserved  allocationPhase = "reserved"
+	allocationCommitted allocationPhase = "committed"
+)
+
 type deviceAllocateInfo struct {
+	// phase tracks whether this entry is reserved or committed.
+	phase allocationPhase
 	// deviceIds contains device Ids allocated to this container for the given resourceName.
 	deviceIds checkpoint.DevicesPerNUMA
 	// allocResp contains cached rpc AllocateResponse.
@@ -74,6 +83,18 @@ func (pdev *podDevices) hasPod(podUID string) bool {
 }
 
 func (pdev *podDevices) insert(podUID, contName, resource string, devices checkpoint.DevicesPerNUMA, resp *pluginapi.ContainerAllocateResponse) {
+	phase := allocationCommitted
+	if resp == nil {
+		phase = allocationReserved
+	}
+	pdev.insertWithPhase(podUID, contName, resource, phase, devices, resp)
+}
+
+func (pdev *podDevices) insertReservation(podUID, contName, resource string, devices checkpoint.DevicesPerNUMA) {
+	pdev.insertWithPhase(podUID, contName, resource, allocationReserved, devices, nil)
+}
+
+func (pdev *podDevices) insertWithPhase(podUID, contName, resource string, phase allocationPhase, devices checkpoint.DevicesPerNUMA, resp *pluginapi.ContainerAllocateResponse) {
 	pdev.Lock()
 	defer pdev.Unlock()
 	if _, podExists := pdev.devs[podUID]; !podExists {
@@ -83,6 +104,7 @@ func (pdev *podDevices) insert(podUID, contName, resource string, devices checkp
 		pdev.devs[podUID][contName] = make(resourceAllocateInfo)
 	}
 	pdev.devs[podUID][contName][resource] = deviceAllocateInfo{
+		phase:     phase,
 		deviceIds: devices,
 		allocResp: resp,
 	}
@@ -93,6 +115,26 @@ func (pdev *podDevices) delete(pods []string) {
 	defer pdev.Unlock()
 	for _, uid := range pods {
 		delete(pdev.devs, uid)
+	}
+}
+
+func (pdev *podDevices) deleteResource(podUID, contName, resource string) {
+	pdev.Lock()
+	defer pdev.Unlock()
+	containers, podExists := pdev.devs[podUID]
+	if !podExists {
+		return
+	}
+	resources, contExists := containers[contName]
+	if !contExists {
+		return
+	}
+	delete(resources, resource)
+	if len(resources) == 0 {
+		delete(containers, contName)
+	}
+	if len(containers) == 0 {
+		delete(pdev.devs, podUID)
 	}
 }
 
@@ -124,6 +166,9 @@ func (pdev *podDevices) containerDevices(podUID, contName, resource string) sets
 	if !resourceExists {
 		return nil
 	}
+	if devs.phase != allocationCommitted {
+		return nil
+	}
 	return devs.deviceIds.Devices()
 }
 
@@ -140,6 +185,9 @@ func (pdev *podDevices) addContainerAllocatedResources(podUID, contName string, 
 		return
 	}
 	for resource, devices := range resources {
+		if devices.phase != allocationCommitted {
+			continue
+		}
 		allocatedResources[resource] = allocatedResources[resource].Union(devices.deviceIds.Devices())
 	}
 }
@@ -157,11 +205,14 @@ func (pdev *podDevices) removeContainerAllocatedResources(podUID, contName strin
 		return
 	}
 	for resource, devices := range resources {
+		if devices.phase != allocationCommitted {
+			continue
+		}
 		allocatedResources[resource] = allocatedResources[resource].Difference(devices.deviceIds.Devices())
 	}
 }
 
-// Returns all devices allocated to the pods being tracked, keyed by resourceName.
+// Returns all committed devices allocated to the pods being tracked, keyed by resourceName.
 func (pdev *podDevices) devices() map[string]sets.Set[string] {
 	ret := make(map[string]sets.Set[string])
 	pdev.RLock()
@@ -172,9 +223,27 @@ func (pdev *podDevices) devices() map[string]sets.Set[string] {
 				if _, exists := ret[resource]; !exists {
 					ret[resource] = sets.New[string]()
 				}
-				if devices.allocResp != nil {
+				if devices.phase == allocationCommitted {
 					ret[resource] = ret[resource].Union(devices.deviceIds.Devices())
 				}
+			}
+		}
+	}
+	return ret
+}
+
+// Returns all devices currently unavailable because they are either reserved or committed.
+func (pdev *podDevices) devicesInUse() map[string]sets.Set[string] {
+	ret := make(map[string]sets.Set[string])
+	pdev.RLock()
+	defer pdev.RUnlock()
+	for _, containerDevices := range pdev.devs {
+		for _, resources := range containerDevices {
+			for resource, devices := range resources {
+				if _, exists := ret[resource]; !exists {
+					ret[resource] = sets.New[string]()
+				}
+				ret[resource] = ret[resource].Union(devices.deviceIds.Devices())
 			}
 		}
 	}
@@ -190,6 +259,9 @@ func (pdev *podDevices) getPodAndContainerForDevice(resourceName, deviceID strin
 	for podUID, containerDevices := range pdev.devs {
 		for containerName, resources := range containerDevices {
 			if devices, ok := resources[resourceName]; ok {
+				if devices.phase != allocationCommitted {
+					continue
+				}
 				if devices.deviceIds.Devices().Has(deviceID) {
 					return podUID, containerName
 				}
@@ -207,6 +279,9 @@ func (pdev *podDevices) toCheckpointData(logger klog.Logger) []checkpoint.PodDev
 	for podUID, containerDevices := range pdev.devs {
 		for conName, resources := range containerDevices {
 			for resource, devices := range resources {
+				if devices.phase != allocationCommitted {
+					continue
+				}
 				if devices.allocResp == nil {
 					logger.Error(nil, "Can't marshal allocResp, allocation response is missing", "podUID", podUID, "containerName", conName, "resourceName", resource)
 					continue
@@ -268,6 +343,9 @@ func (pdev *podDevices) deviceRunContainerOptions(logger klog.Logger, podUID, co
 	allCDIDevices := sets.New[string]()
 	// Loops through AllocationResponses of all cached device resources.
 	for _, devices := range resources {
+		if devices.phase != allocationCommitted || devices.allocResp == nil {
+			continue
+		}
 		resp := devices.allocResp
 		// Each Allocate response has the following artifacts.
 		// Environment variables
@@ -386,6 +464,9 @@ func (pdev *podDevices) getContainerDevices(podUID, contName string) ResourceDev
 	}
 	resDev := NewResourceDeviceInstances()
 	for resource, allocateInfo := range pdev.devs[podUID][contName] {
+		if allocateInfo.phase != allocationCommitted {
+			continue
+		}
 		if len(allocateInfo.deviceIds) == 0 {
 			continue
 		}
