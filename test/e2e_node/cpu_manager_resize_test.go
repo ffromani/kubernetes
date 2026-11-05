@@ -18,6 +18,7 @@ package e2enode
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/onsi/gomega"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubernetes/pkg/features"
@@ -47,6 +49,146 @@ type containerCPUInfo struct {
 	Name     string
 	InitCtr  bool
 	cpuCount int
+}
+
+type podResizeEnv struct {
+	fwk           *framework.Framework
+	createPodSync func(context.Context, *v1.Pod) *v1.Pod
+}
+
+type resizePhase string
+
+const (
+	resizePhasePatch     resizePhase = "patch"
+	resizePhaseActuation resizePhase = "actuation"
+)
+
+type resizeError struct {
+	errorString string
+	phase       resizePhase
+}
+
+type podResizeStep struct {
+	desiredContainers  []podresize.ResizableContainerInfo
+	expectedContainers []podresize.ResizableContainerInfo
+	wantError          resizeError
+	// terminal stops the sequence after verifying this step's expected outcome,
+	// whether success or failure. Otherwise, subsequent steps run, allowing recovery tests.
+	terminal bool
+}
+
+func exclusiveCPUCount(container podresize.ResizableContainerInfo) int {
+	ginkgo.GinkgoHelper()
+
+	gomega.Expect(container.Resources).NotTo(gomega.BeNil(), "container %q must specify resources", container.Name)
+	cpu := resource.MustParse(container.Resources.CPUReq)
+	gomega.Expect(cpu.MilliValue()).To(gomega.BeNumerically(">", 0), "container %q must request exclusive CPUs", container.Name)
+	gomega.Expect(cpu.MilliValue()%1000).To(gomega.BeZero(), "container %q must request an integer number of CPUs", container.Name)
+	return int(cpu.Value())
+}
+
+func checkAllocatedCPUsForResizeStep(ctx context.Context, f *framework.Framework, containers []podresize.ResizableContainerInfo, pod *v1.Pod) {
+	ginkgo.GinkgoHelper()
+
+	cpuInfo := make([]containerCPUInfo, len(containers))
+	for i, container := range containers {
+		cpuInfo[i] = containerCPUInfo{
+			Name:     container.Name,
+			InitCtr:  container.InitCtr,
+			cpuCount: exclusiveCPUCount(container),
+		}
+	}
+	checkAllocatedCPUsForResize(ctx, f, cpuInfo, pod)
+}
+
+func containersForCPUs(cpus int) []podresize.ResizableContainerInfo {
+	cpuQuantity := strconv.Itoa(cpus)
+	return []podresize.ResizableContainerInfo{
+		{
+			Name:      "gu-container-1",
+			Resources: &cgroups.ContainerResources{CPUReq: cpuQuantity, CPULim: cpuQuantity, MemReq: "300Mi", MemLim: "300Mi"},
+		},
+	}
+}
+
+func requiredCPUsForResizeSequence(originalContainers []podresize.ResizableContainerInfo, steps ...podResizeStep) int {
+	ginkgo.GinkgoHelper()
+
+	requiredCPUs := 0
+	for _, container := range originalContainers {
+		requiredCPUs = max(requiredCPUs, exclusiveCPUCount(container))
+	}
+	for _, step := range steps {
+		for _, container := range step.expectedContainers {
+			requiredCPUs = max(requiredCPUs, exclusiveCPUCount(container))
+		}
+	}
+	return requiredCPUs
+}
+
+func applyPodResizeSequence(ctx context.Context, env podResizeEnv, originalContainers []podresize.ResizableContainerInfo, steps ...podResizeStep) {
+	ginkgo.GinkgoHelper()
+
+	cpuCapacity, cpuAllocatable, cpuReserved := getLocalNodeCPUDetails(ctx, env.fwk)
+	framework.Logf("Node CPU resources: capacity=%d allocatable=%d reserved=%d", cpuCapacity, cpuAllocatable, cpuReserved)
+
+	podClient := e2epod.NewPodClient(env.fwk)
+	testPod := podresize.MakePodWithResizableContainers(env.fwk.Namespace.Name, "testpod", strconv.Itoa(time.Now().Nanosecond()), originalContainers, nil)
+	testPod = e2epod.MustMixinRestrictedPodSecurity(testPod)
+	ginkgo.By("creating the test pod")
+	testPod = env.createPodSync(ctx, testPod)
+	podresize.VerifyPodResources(testPod, originalContainers, nil)
+	checkAllocatedCPUsForResizeStep(ctx, env.fwk, originalContainers, testPod)
+
+	currentContainers := originalContainers
+	for i, step := range steps {
+		ginkgo.By(fmt.Sprintf("applying resize step %d of %d", i+1, len(steps)))
+		beforePatch, err := podClient.Get(ctx, testPod.Name, metav1.GetOptions{})
+		framework.ExpectNoError(err, "failed to get pod before resize step %d", i+1)
+		expected := podresize.UpdateExpectedContainerRestarts(ctx, beforePatch, step.expectedContainers)
+		patch := podresize.MakeResizePatch(currentContainers, step.desiredContainers, nil, nil)
+
+		patchedPod, err := podClient.Patch(ctx, testPod.Name, apimachinerytypes.StrategicMergePatchType, patch, metav1.PatchOptions{}, "resize")
+		if step.wantError.phase == resizePhasePatch {
+			gomega.Expect(err).To(gomega.HaveOccurred(), "resize step %d must be rejected", i+1)
+			gomega.Expect(err).To(gomega.MatchError(gomega.MatchRegexp(step.wantError.errorString)))
+
+			testPod, err = podClient.Get(ctx, testPod.Name, metav1.GetOptions{})
+			framework.ExpectNoError(err, "failed to get pod after rejected resize step %d", i+1)
+			podresize.VerifyPodResources(testPod, step.expectedContainers, nil)
+			checkAllocatedCPUsForResizeStep(ctx, env.fwk, step.expectedContainers, testPod)
+			if step.terminal {
+				return
+			}
+			continue
+		}
+		framework.ExpectNoError(err, "failed to patch pod for resize step %d", i+1)
+		currentContainers = step.desiredContainers
+
+		if step.wantError.phase == resizePhaseActuation {
+			ginkgo.By("waiting for the resize to become infeasible")
+			WaitForPodResizeInfeasible(ctx, env.fwk, patchedPod)
+
+			testPod, err = podClient.Get(ctx, testPod.Name, metav1.GetOptions{})
+			framework.ExpectNoError(err, "failed to get pod after infeasible resize step %d", i+1)
+			gomega.Expect(testPod).To(HaveStatusConditionsMatchingRegex(step.wantError.errorString))
+			checkAllocatedCPUsForResizeStep(ctx, env.fwk, step.expectedContainers, testPod)
+			if step.terminal {
+				return
+			}
+			continue
+		}
+
+		ginkgo.By("waiting for the resize to be actuated")
+		testPod = podresize.WaitForPodResizeActuation(ctx, env.fwk, podClient, patchedPod, expected)
+		podresize.VerifyPodResources(testPod, step.expectedContainers, nil)
+
+		ginkgo.By("verifying the container cpusets after the resize step")
+		checkAllocatedCPUsForResizeStep(ctx, env.fwk, step.expectedContainers, testPod)
+		if step.terminal {
+			return
+		}
+	}
 }
 
 var _ = SIGDescribe("CPU Manager with InPlacePodVerticalScalingExclusiveCPUs enabled", ginkgo.Ordered, ginkgo.ContinueOnFailure, framework.WithSerial(), feature.CPUManager, feature.InPlacePodVerticalScaling, feature.InPlacePodVerticalScalingExclusiveCPUs, framework.WithFeatureGate(features.InPlacePodVerticalScaling), framework.WithFeatureGate(features.InPlacePodVerticalScalingExclusiveCPUs), func() {
@@ -272,196 +414,103 @@ var _ = SIGDescribe("CPU Manager with InPlacePodVerticalScalingExclusiveCPUs ena
 		ginkgo.BeforeEach(func(ctx context.Context) {
 			reservedCPUs = cpuset.New(0)
 		})
-		ginkgo.DescribeTable("",
-			func(ctx context.Context,
-				originalContainers []podresize.ResizableContainerInfo,
-				originalCpuInfo []containerCPUInfo,
-				desiredContainers []podresize.ResizableContainerInfo,
-				expectedContainers []podresize.ResizableContainerInfo,
-				expectedCpuInfo []containerCPUInfo,
-				wantPatchError string,
-				wantActuationError string,
-			) {
-				skipIfAllocatableCPUsLessThan(getLocalNode(ctx, f), expectedCpuInfo[0].cpuCount)
 
+		ginkgo.DescribeTable("using a sequence of resize steps",
+			func(ctx context.Context, steps ...podResizeStep) {
+				originalContainers := containersForCPUs(2)
+				requiredCPUs := requiredCPUsForResizeSequence(originalContainers, steps...)
+				skipIfAllocatableCPUsLessThan(getLocalNode(ctx, f), requiredCPUs)
 				updateKubeletConfigIfNeeded(ctx, f, configureCPUManagerInKubelet(oldCfg, &cpuManagerKubeletArguments{
 					policyName:         string(cpumanager.PolicyStatic),
-					reservedSystemCPUs: reservedCPUs, // Not really needed for the tests but helps to make a more precise check
+					reservedSystemCPUs: reservedCPUs,
 					enableInPlacePodVerticalScalingExclusiveCPUs: true,
 				}))
-
-				testPodResize(ctx, originalContainers, originalCpuInfo, desiredContainers, expectedContainers, expectedCpuInfo, wantPatchError, wantActuationError, nil, nil, nil, "", "", podMap)
+				applyPodResizeSequence(ctx, podResizeEnv{
+					fwk:           f,
+					createPodSync: createPodSync,
+				}, originalContainers, steps...)
 			},
-			ginkgo.Entry("should increase exclusively CPUs, within available capacity",
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
+			ginkgo.Entry("should increase exclusively allocated CPUs within available capacity",
+				podResizeStep{
+					desiredContainers:  containersForCPUs(3),
+					expectedContainers: containersForCPUs(3),
 				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "3000m", CPULim: "3000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "3000m", CPULim: "3000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
-				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 3,
-					},
-				},
-				"",
-				"",
 			),
-			ginkgo.Entry("should increase the CPU request/limit, decrease memory request/limit, within available capacity",
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "400Mi", MemLim: "400Mi"},
-					},
+			ginkgo.Entry("should increase and then decrease exclusively allocated CPUs back to the baseline",
+				podResizeStep{
+					desiredContainers:  containersForCPUs(3),
+					expectedContainers: containersForCPUs(3),
 				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
+				podResizeStep{
+					desiredContainers:  containersForCPUs(2),
+					expectedContainers: containersForCPUs(2),
 				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "4000m", CPULim: "4000m", MemReq: "200Mi", MemLim: "200Mi"},
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "4000m", CPULim: "4000m", MemReq: "200Mi", MemLim: "200Mi"},
-					},
-				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 4,
-					},
-				},
-				"",
-				"",
 			),
-			ginkgo.Entry("should increase the CPU request/limit, increase memory request/limit, within available capacity",
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "200Mi", MemLim: "200Mi"},
+			ginkgo.Entry("should not decrease exclusively allocated CPUs below the baseline cpuset",
+				podResizeStep{
+					desiredContainers:  containersForCPUs(1),
+					expectedContainers: containersForCPUs(2),
+					wantError: resizeError{
+						errorString: "Infeasible.*Not allowed to reduce container exclusively allocated pool below baseline.*",
+						phase:       resizePhaseActuation,
 					},
+					terminal: true,
 				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "4000m", CPULim: "4000m", MemReq: "400Mi", MemLim: "400Mi"},
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "4000m", CPULim: "4000m", MemReq: "400Mi", MemLim: "400Mi"},
-					},
-				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 4,
-					},
-				},
-				"",
-				"",
 			),
-			ginkgo.Entry("should not decrease allocated exclusively CPUs, below baseline cpuset",
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "300Mi", MemLim: "300Mi"},
+			ginkgo.Entry("should successfully resize after an infeasible resize",
+				podResizeStep{
+					desiredContainers:  containersForCPUs(1),
+					expectedContainers: containersForCPUs(2),
+					wantError: resizeError{
+						errorString: "Infeasible.*Not allowed to reduce container exclusively allocated pool below baseline.*",
+						phase:       resizePhaseActuation,
 					},
+					terminal: false,
 				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
+				podResizeStep{
+					desiredContainers:  containersForCPUs(3),
+					expectedContainers: containersForCPUs(3),
+					terminal:           true,
 				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "1000m", CPULim: "1000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
-				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
-				},
-				"",
-				"Infeasible.*Not allowed to reduce container exclusively allocated pool below baseline.*",
 			),
-			ginkgo.Entry("should not increase allocated exclusively CPUs, beyond available capacity",
-				[]podresize.ResizableContainerInfo{
+		)
+
+		ginkgo.DescribeTable("when a resize exceeds node capacity",
+			func(ctx context.Context, recoverAfterFailure bool) {
+				cpuCapacity, _, _ := getLocalNodeCPUDetails(ctx, f)
+				originalContainers := containersForCPUs(2)
+				steps := []podResizeStep{
 					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "300Mi", MemLim: "300Mi"},
+						desiredContainers:  containersForCPUs(int(cpuCapacity) + 1),
+						expectedContainers: containersForCPUs(2),
+						wantError: resizeError{
+							errorString: ".*node didn't have enough allocatable resources.*",
+							phase:       resizePhasePatch,
+						},
+						terminal: !recoverAfterFailure,
 					},
-				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "40000m", CPULim: "40000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
-				},
-				[]podresize.ResizableContainerInfo{
-					{
-						Name:      "gu-container-1",
-						Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "300Mi", MemLim: "300Mi"},
-					},
-				},
-				[]containerCPUInfo{
-					{
-						Name:     "gu-container-1",
-						cpuCount: 2,
-					},
-				},
-				".*node didn't have enough allocatable resources.*",
-				"",
-			),
+				}
+				if recoverAfterFailure {
+					steps = append(steps, podResizeStep{
+						desiredContainers:  containersForCPUs(3),
+						expectedContainers: containersForCPUs(3),
+						terminal:           true,
+					})
+				}
+				requiredCPUs := requiredCPUsForResizeSequence(originalContainers, steps...)
+				skipIfAllocatableCPUsLessThan(getLocalNode(ctx, f), requiredCPUs)
+				updateKubeletConfigIfNeeded(ctx, f, configureCPUManagerInKubelet(oldCfg, &cpuManagerKubeletArguments{
+					policyName:         string(cpumanager.PolicyStatic),
+					reservedSystemCPUs: reservedCPUs,
+					enableInPlacePodVerticalScalingExclusiveCPUs: true,
+				}))
+				applyPodResizeSequence(ctx, podResizeEnv{
+					fwk:           f,
+					createPodSync: createPodSync,
+				}, originalContainers, steps...)
+			},
+			ginkgo.Entry("should not increase exclusively allocated CPUs beyond available capacity", false),
+			ginkgo.Entry("should successfully resize after a rejected resize", true),
 		)
 	})
 
